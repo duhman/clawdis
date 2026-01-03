@@ -1,80 +1,186 @@
-# Repository Guidelines
+# CLAUDE.md
 
-## Project Structure & Module Organization
-- Source code: `src/` (CLI wiring in `src/cli`, commands in `src/commands`, web provider in `src/provider-web.ts`, infra in `src/infra`, media pipeline in `src/media`).
-- Tests: colocated `*.test.ts`.
-- Docs: `docs/` (images, queue, Pi config). Built output lives in `dist/`.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build, Test, and Development Commands
-- Install deps: `pnpm install`
-- Run CLI in dev: `pnpm clawdbot ...` (tsx entry) or `pnpm dev` for `src/index.ts`.
-- Type-check/build: `pnpm build` (tsc)
-- Lint/format: `pnpm lint` (biome check), `pnpm format` (biome format)
-- Tests: `pnpm test` (vitest); coverage: `pnpm test:coverage`
+## What is Clawdis?
 
-## Coding Style & Naming Conventions
-- Language: TypeScript (ESM). Prefer strict typing; avoid `any`.
-- Formatting/linting via Biome; run `pnpm lint` before commits.
-- Keep files concise; extract helpers instead of “V2” copies. Use existing patterns for CLI options and dependency injection via `createDefaultDeps`.
-- Aim to keep files under ~700 LOC; guideline only (not a hard guardrail). Split/refactor when it improves clarity or testability.
+A personal AI assistant platform with multi-surface messaging (WhatsApp, Telegram, Discord, iMessage), voice wake, and a Canvas UI. The Gateway is the control plane; companion apps (macOS, iOS, Android) connect as nodes.
 
-## Testing Guidelines
-- Framework: Vitest with V8 coverage thresholds (70% lines/branches/functions/statements).
-- Naming: match source names with `*.test.ts`; e2e in `*.e2e.test.ts`.
-- Run `pnpm test` (or `pnpm test:coverage`) before pushing when you touch logic.
-- Pure test additions/fixes generally do **not** need a changelog entry unless they alter user-facing behavior or the user asks for one.
-- Mobile: before using a simulator, check for connected real devices (iOS + Android) and prefer them when available.
-
-## Commit & Pull Request Guidelines
-- Create commits with `scripts/committer "<msg>" <file...>`; avoid manual `git add`/`git commit` so staging stays scoped.
-- Follow concise, action-oriented commit messages (e.g., `CLI: add verbose flag to send`).
-- Group related changes; avoid bundling unrelated refactors.
-- PRs should summarize scope, note testing performed, and mention any user-facing changes or new flags.
-
-## Security & Configuration Tips
-- Web provider stores creds at `~/.clawdbot/credentials/`; rerun `clawdbot login` if logged out.
-- Pi sessions live under `~/.clawdbot/sessions/` by default; the base directory is not configurable.
-- Never commit or publish real phone numbers, videos, or live configuration values. Use obviously fake placeholders in docs, tests, and examples.
-
-## Agent-Specific Notes
-- Gateway currently runs only as the menubar app (launchctl shows `application.com.steipete.clawdbot.debug.*`), there is no separate LaunchAgent/helper label installed. Restart via the Clawdbot Mac app or `scripts/restart-mac.sh`; to verify/kill use `launchctl print gui/$UID | grep clawdbot` rather than expecting `com.steipete.clawdbot`. **When debugging on macOS, start/stop the gateway via the app, not ad-hoc tmux sessions; kill any temporary tunnels before handoff.**
-- macOS logs: use `./scripts/clawlog.sh` (aka `vtlog`) to query unified logs for subsystem `com.steipete.clawdbot`; it supports follow/tail/category filters and expects passwordless sudo for `/usr/bin/log`.
-- Also read the shared guardrails at `~/Projects/oracle/AGENTS.md` and `~/Projects/agent-scripts/AGENTS.MD` before making changes; align with any cross-repo rules noted there.
-- SwiftUI state management (iOS/macOS): prefer the `Observation` framework (`@Observable`, `@Bindable`) over `ObservableObject`/`@StateObject`; don’t introduce new `ObservableObject` unless required for compatibility, and migrate existing usages when touching related code.
-- Connection providers: when adding a new connection, update every UI surface and docs (macOS app, web UI, mobile if applicable, onboarding/overview docs) and add matching status + configuration forms so provider lists and settings stay in sync.
-- **Restart apps:** “restart iOS/Android apps” means rebuild (recompile/install) and relaunch, not just kill/launch.
-- **Device checks:** before testing, verify connected real devices (iOS/Android) before reaching for simulators/emulators.
-- iOS Team ID lookup: `security find-identity -p codesigning -v` → use Apple Development (…) TEAMID. Fallback: `defaults read com.apple.dt.Xcode IDEProvisioningTeamIdentifiers`.
-- A2UI bundle hash: `src/canvas-host/a2ui/.bundle.hash` is auto-generated; ignore unexpected changes, and only regenerate via `pnpm canvas:a2ui:bundle` (or `scripts/bundle-a2ui.sh`) when needed. Commit the hash as a separate commit.
-- Notary key file lives at `~/Library/CloudStorage/Dropbox/Backup/AppStore/AuthKey_NJF3NFGTS3.p8` (Sparkle keys live under `~/Library/CloudStorage/Dropbox/Backup/Sparkle`).
-- Notary auth env vars (`APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_API_KEY_P8`) are in `~/.profile`.
-- **Multi-agent safety:** do **not** create/apply/drop `git stash` entries unless Peter explicitly asks (this includes `git pull --rebase --autostash`). Assume other agents may be working; keep unrelated WIP untouched and avoid cross-cutting state changes.
-- **Multi-agent safety:** when Peter says "push", you may `git pull --rebase` to integrate latest changes (never discard other agents' work). When Peter says "commit", scope to your changes only. When Peter says "commit all", commit everything in grouped chunks.
-- **Multi-agent safety:** do **not** create/remove/modify `git worktree` checkouts (or edit `.worktrees/*`) unless Peter explicitly asks.
-- **Multi-agent safety:** do **not** switch branches / check out a different branch unless Peter explicitly asks.
-- **Multi-agent safety:** running multiple agents is OK as long as each agent has its own session.
-- **Multi-agent safety:** when you see unrecognized files, keep going; focus on your changes and commit only those.
-- When asked to open a “session” file, open the Pi session logs under `~/.clawdbot/sessions/*.jsonl` (newest unless a specific ID is given), not the default `sessions.json`. If logs are needed from Mac Studio, SSH via Tailscale and read the same path there.
-- Menubar dimming + restart flow mirrors Trimmy: use `scripts/restart-mac.sh` (kills all Clawdbot variants, runs `swift build`, packages, relaunches). Icon dimming depends on MenuBarExtraAccess wiring in AppMain; keep `appearsDisabled` updates intact when touching the status item.
-- Do not rebuild the macOS app over SSH; rebuilds must be run directly on the Mac.
-- Never send streaming/partial replies to external messaging surfaces (WhatsApp, Telegram); only final replies should be delivered there. Streaming/tool events may still go to internal UIs/control channel.
-- Voice wake forwarding tips:
-  - Command template should stay `clawdbot-mac agent --message "${text}" --thinking low`; `VoiceWakeForwarder` already shell-escapes `${text}`. Don’t add extra quotes.
-  - launchd PATH is minimal; ensure the app’s launch agent sets PATH to include `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/steipete/Library/pnpm` so `pnpm`/`clawdbot` binaries resolve when invoked via `clawdbot-mac`.
-  - For manual `clawdbot send` messages that include `!`, use the heredoc pattern noted below to avoid the Bash tool’s escaping.
-
-## Exclamation Mark Escaping Workaround
-The Claude Code Bash tool escapes `!` to `\\!` in command arguments. When using `clawdbot send` with messages containing exclamation marks, use heredoc syntax:
+## Build & Development
 
 ```bash
-# WRONG - will send "Hello\\!" with backslash
-clawdbot send --to "+1234" --message 'Hello!'
+pnpm install           # Install deps
+pnpm build             # TypeScript build (tsc)
+pnpm clawdis ...       # Run CLI in dev mode (tsx)
+pnpm gateway:watch     # Auto-reload gateway on TS changes
+```
 
-# CORRECT - use heredoc to avoid escaping
-clawdbot send --to "+1234" --message "$(cat <<'EOF'
+### Common Commands
+
+| Command | Purpose |
+|---------|---------|
+| `pnpm clawdis gateway --port 18789` | Start gateway |
+| `pnpm clawdis login` | Link WhatsApp |
+| `pnpm clawdis send --to +1234 --message "Hi"` | Send message |
+| `pnpm clawdis agent --message "..." --thinking high` | Run agent |
+| `pnpm clawdis onboard` | Setup wizard |
+
+### Testing & Quality
+
+```bash
+pnpm test              # Vitest (colocated *.test.ts)
+pnpm test:coverage     # With V8 coverage (70% thresholds)
+pnpm lint              # Biome check + oxlint
+pnpm lint:fix          # Auto-fix lint issues
+pnpm format            # Biome format
+```
+
+### Protocol & A2UI
+
+```bash
+pnpm protocol:gen         # Generate JSON Schema from TypeBox
+pnpm protocol:gen:swift   # Generate Swift models
+pnpm canvas:a2ui:bundle   # Regenerate A2UI bundle
+```
+
+## Architecture
+
+### Source Layout
+
+| Directory | Purpose |
+|-----------|---------|
+| `src/gateway/` | WebSocket server (single source of truth) |
+| `src/cli/` | Commander-based CLI wiring |
+| `src/commands/` | CLI command implementations |
+| `src/infra/` | Infrastructure (bridge, presence, sessions) |
+| `src/agents/` | Pi agent integration |
+| `src/media/` | Media processing pipeline |
+| `src/telegram/` | Telegram provider (grammY) |
+| `src/discord/` | Discord provider (discord.js) |
+| `src/web/` | WhatsApp web provider (Baileys) |
+| `apps/macos/` | macOS menubar app (Swift) |
+| `apps/ios/` | iOS node app (Swift) |
+| `apps/android/` | Android node app |
+
+### Gateway Protocol
+
+- **Transport**: WebSocket on `ws://127.0.0.1:18789`
+- **First frame must be `connect`**; AJV validates all frames against TypeBox schemas
+- **Methods**: `send`, `agent`, `chat.*`, `sessions.*`, `config.*`, `cron.*`, `node.*`
+- **Events**: `agent`, `chat`, `presence`, `tick`, `health`, `heartbeat`, `shutdown`
+- **Idempotency keys required** for side-effecting methods (`send`, `agent`)
+
+### Node Bridge
+
+Optional TCP bridge (`src/infra/bridge/`) for iOS/Android nodes:
+- Newline-delimited JSON frames
+- Pairing flow with tokens
+- Capabilities: canvas, screen, camera, voiceWake
+
+## Code Patterns
+
+### Dependency Injection
+
+Use `createDefaultDeps()` pattern for testable components. CLI options follow existing command patterns.
+
+### TypeScript
+
+- ESM modules, strict typing, avoid `any`
+- Biome for formatting/linting
+- Files ~700 LOC guideline (not hard limit)
+
+### Testing
+
+- Vitest with V8 coverage
+- Colocated `*.test.ts` files; e2e as `*.e2e.test.ts`
+- Mobile: prefer real devices over simulators
+
+## Commit Workflow
+
+```bash
+scripts/committer "<msg>" <file...>   # Scoped commits
+```
+
+Avoid manual `git add`/`git commit` to keep staging scoped.
+
+## Configuration
+
+- Config: `~/.clawdis/clawdis.json`
+- Credentials: `~/.clawdis/credentials/`
+- Sessions: `~/.clawdis/sessions/`
+- Workspace: `~/clawd/` (agent skills, AGENTS.md, SOUL.md)
+
+## macOS App
+
+```bash
+./scripts/restart-mac.sh    # Build + package + relaunch
+./scripts/clawlog.sh        # Query unified logs (subsystem com.steipete.clawdis)
+```
+
+SwiftUI: prefer `@Observable`/`@Bindable` (Observation framework) over `ObservableObject`/`@StateObject`.
+
+## Key Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) - Gateway architecture
+- [`docs/gateway.md`](docs/gateway.md) - Gateway details
+- [`docs/configuration.md`](docs/configuration.md) - Config reference
+- [`docs/agent.md`](docs/agent.md) - Agent runtime
+- [`docs/RELEASING.md`](docs/RELEASING.md) - Release checklist
+
+## Claude Code Workaround
+
+The Bash tool escapes `!` to `\\!`. Use heredoc for messages with exclamation marks:
+
+```bash
+clawdis send --to "+1234" --message "$(cat <<'EOF'
 Hello!
 EOF
 )"
 ```
 
-This is a Claude Code quirk, not a clawdbot bug.
+## Known Gotchas
+
+### Swift 6.2 Runtime Libraries
+
+SwiftPM builds don't automatically bundle Swift compatibility libraries. When the app fails to launch with `dyld: Library not loaded: @rpath/libswiftCompatibilitySpan.dylib`, the packaging script needs to copy it:
+
+```bash
+# Already handled in scripts/package-mac-app.sh
+cp /Applications/Xcode.app/.../lib/swift-6.2/macosx/libswiftCompatibilitySpan.dylib \
+   "$APP_ROOT/Contents/Frameworks/"
+```
+
+When upgrading Swift/Xcode, check for new compatibility libraries.
+
+### Gateway Token: CLI vs App Mismatch
+
+| Component | Token Source |
+|-----------|--------------|
+| CLI (`clawdis health`) | `~/.clawdis/clawdis.json` → `gateway.remote.token` |
+| macOS App | `CLAWDIS_GATEWAY_TOKEN` env var only |
+
+If the app shows "unauthorized" but CLI works, set the env var:
+
+```bash
+launchctl setenv CLAWDIS_GATEWAY_TOKEN "your-token"
+# Then restart the app
+```
+
+For persistence, create `~/Library/LaunchAgents/com.*.clawdis.env.plist` with `RunAtLoad`.
+
+### macOS GUI Apps Don't Inherit Shell Environment
+
+Apps launched from Finder/Spotlight don't see `~/.zshrc` exports. Use:
+- `launchctl setenv VAR value` (immediate, current session)
+- LaunchAgent with `RunAtLoad` (persistent across reboots)
+
+### Remote Gateway Setup Checklist
+
+1. **Mac Mini (gateway host)**:
+   - Gateway running with `gateway.auth.token` in config
+   - `gateway.bind: "lan"` or `"tailnet"` (not `"loopback"`)
+
+2. **Client Mac**:
+   - SSH key copied to gateway host (`ssh-copy-id user@host`)
+   - `CLAWDIS_GATEWAY_TOKEN` env var set (for app)
+   - Config has matching token in `gateway.remote.token` (for CLI)

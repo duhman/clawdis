@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { loadConfig, resolveGatewayPort } from "../config/config.js";
-import { pickPrimaryTailnetIPv4 } from "../infra/tailnet.js";
+import { loadConfig } from "../config/config.js";
 import { GatewayClient } from "./client.js";
 import { PROTOCOL_VERSION } from "./protocol/index.js";
 
@@ -28,16 +27,6 @@ export async function callGateway<T = unknown>(
   const config = loadConfig();
   const isRemoteMode = config.gateway?.mode === "remote";
   const remote = isRemoteMode ? config.gateway?.remote : undefined;
-  const authToken = config.gateway?.auth?.token;
-  const localPort = resolveGatewayPort(config);
-  const tailnetIPv4 = pickPrimaryTailnetIPv4();
-  const bindMode = config.gateway?.bind ?? "loopback";
-  const preferTailnet =
-    bindMode === "tailnet" || (bindMode === "auto" && !!tailnetIPv4);
-  const localUrl =
-    preferTailnet && tailnetIPv4
-      ? `ws://${tailnetIPv4}:${localPort}`
-      : `ws://127.0.0.1:${localPort}`;
   const url =
     (typeof opts.url === "string" && opts.url.trim().length > 0
       ? opts.url.trim()
@@ -45,7 +34,7 @@ export async function callGateway<T = unknown>(
     (typeof remote?.url === "string" && remote.url.trim().length > 0
       ? remote.url.trim()
       : undefined) ||
-    localUrl;
+    "ws://127.0.0.1:18789";
   const token =
     (typeof opts.token === "string" && opts.token.trim().length > 0
       ? opts.token.trim()
@@ -54,15 +43,16 @@ export async function callGateway<T = unknown>(
       ? typeof remote?.token === "string" && remote.token.trim().length > 0
         ? remote.token.trim()
         : undefined
-      : process.env.CLAWDBOT_GATEWAY_TOKEN?.trim() ||
-        (typeof authToken === "string" && authToken.trim().length > 0
-          ? authToken.trim()
+      : process.env.CLAWDIS_GATEWAY_TOKEN?.trim() ||
+        (typeof config.gateway?.auth?.token === "string" &&
+        config.gateway.auth.token.trim().length > 0
+          ? config.gateway.auth.token.trim()
           : undefined));
   const password =
     (typeof opts.password === "string" && opts.password.trim().length > 0
       ? opts.password.trim()
       : undefined) ||
-    process.env.CLAWDBOT_GATEWAY_PASSWORD?.trim() ||
+    process.env.CLAWDIS_GATEWAY_PASSWORD ||
     (typeof remote?.password === "string" && remote.password.trim().length > 0
       ? remote.password.trim()
       : undefined);
@@ -104,8 +94,6 @@ export async function callGateway<T = unknown>(
       },
       onClose: (code, reason) => {
         if (settled || ignoreClose) return;
-        ignoreClose = true;
-        client.stop();
         stop(new Error(`gateway closed (${code}): ${reason}`));
       },
     });
