@@ -89,6 +89,20 @@ if [ -d "$SPARKLE_FRAMEWORK" ]; then
   chmod -R a+rX "$APP_ROOT/Contents/Frameworks/Sparkle.framework"
 fi
 
+echo "📚 Copying Swift compatibility libraries"
+SWIFT_COMPAT_DYLIB="$(xcrun --find swift | sed 's|/bin/swift$||')/lib/swift-6.2/macosx/libswiftCompatibilitySpan.dylib"
+if [ -f "$SWIFT_COMPAT_DYLIB" ]; then
+  cp "$SWIFT_COMPAT_DYLIB" "$APP_ROOT/Contents/Frameworks/"
+else
+  # Fallback to Xcode's toolchain path
+  XCODE_SWIFT_DYLIB="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-6.2/macosx/libswiftCompatibilitySpan.dylib"
+  if [ -f "$XCODE_SWIFT_DYLIB" ]; then
+    cp "$XCODE_SWIFT_DYLIB" "$APP_ROOT/Contents/Frameworks/"
+  else
+    echo "WARN: libswiftCompatibilitySpan.dylib not found (continuing)" >&2
+  fi
+fi
+
 echo "🖼  Copying app icon"
 cp "$ROOT_DIR/apps/macos/Sources/Clawdis/Resources/Clawdis.icns" "$APP_ROOT/Contents/Resources/Clawdis.icns"
 

@@ -460,7 +460,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       } else if (isGroupDm) {
         const channelName =
           interaction.channel && "name" in interaction.channel
-            ? interaction.channel.name
+            ? (interaction.channel.name ?? undefined)
             : undefined;
         const channelSlug = channelName
           ? normalizeDiscordSlug(channelName)
