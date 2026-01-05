@@ -22,10 +22,8 @@ import { createDefaultDeps } from "./deps.js";
 import { registerDnsCli } from "./dns-cli.js";
 import { registerGatewayCli } from "./gateway-cli.js";
 import { registerHooksCli } from "./hooks-cli.js";
-import { registerModelsCli } from "./models-cli.js";
 import { registerNodesCli } from "./nodes-cli.js";
 import { forceFreePort } from "./ports.js";
-import { registerTuiCli } from "./tui-cli.js";
 
 export { forceFreePort };
 
@@ -35,23 +33,12 @@ export function buildProgram() {
   const TAGLINE =
     "Send, receive, and auto-reply on WhatsApp (web) and Telegram (bot).";
 
-  program
-    .name("clawdbot")
-    .description("")
-    .version(PROGRAM_VERSION)
-    .option(
-      "--dev",
-      "Dev profile: isolate state under ~/.clawdbot-dev, default gateway port 19001, and shift derived ports (bridge/browser/canvas)",
-    )
-    .option(
-      "--profile <name>",
-      "Use a named profile (isolates CLAWDBOT_STATE_DIR/CLAWDBOT_CONFIG_PATH under ~/.clawdbot-<name>)",
-    );
+  program.name("clawdis").description("").version(PROGRAM_VERSION);
 
   const formatIntroLine = (version: string, rich = true) => {
-    const base = `📡 clawdbot ${version} — ${TAGLINE}`;
+    const base = `📡 clawdis ${version} — ${TAGLINE}`;
     return rich && chalk.level > 0
-      ? `${chalk.bold.cyan("📡 clawdbot")} ${chalk.white(version)} ${chalk.gray("—")} ${chalk.green(TAGLINE)}`
+      ? `${chalk.bold.cyan("📡 clawdis")} ${chalk.white(version)} ${chalk.gray("—")} ${chalk.green(TAGLINE)}`
       : base;
   };
 
@@ -92,36 +79,32 @@ export function buildProgram() {
       .join("\n");
     defaultRuntime.error(
       danger(
-        `Legacy config entries detected. Run "clawdbot doctor" (or ask your agent) to migrate.\n${issues}`,
+        `Legacy config entries detected. Run "clawdis doctor" (or ask your agent) to migrate.\n${issues}`,
       ),
     );
     process.exit(1);
   });
   const examples = [
     [
-      "clawdbot login --verbose",
+      "clawdis login --verbose",
       "Link personal WhatsApp Web and show QR + connection logs.",
     ],
     [
-      'clawdbot send --to +15555550123 --message "Hi" --json',
+      'clawdis send --to +15555550123 --message "Hi" --json',
       "Send via your web session and print JSON result.",
     ],
-    ["clawdbot gateway --port 18789", "Run the WebSocket Gateway locally."],
+    ["clawdis gateway --port 18789", "Run the WebSocket Gateway locally."],
     [
-      "clawdbot --dev gateway",
-      "Run a dev Gateway (isolated state/config) on ws://127.0.0.1:19001.",
-    ],
-    [
-      "clawdbot gateway --force",
+      "clawdis gateway --force",
       "Kill anything bound to the default gateway port, then start it.",
     ],
-    ["clawdbot gateway ...", "Gateway control via WebSocket."],
+    ["clawdis gateway ...", "Gateway control via WebSocket."],
     [
-      'clawdbot agent --to +15555550123 --message "Run summary" --deliver',
+      'clawdis agent --to +15555550123 --message "Run summary" --deliver',
       "Talk directly to the agent using the Gateway; optionally send the WhatsApp reply.",
     ],
     [
-      'clawdbot send --provider telegram --to @mychat --message "Hi"',
+      'clawdis send --provider telegram --to @mychat --message "Hi"',
       "Send via your Telegram bot.",
     ],
   ] as const;
@@ -137,7 +120,7 @@ export function buildProgram() {
 
   program
     .command("setup")
-    .description("Initialize ~/.clawdbot/clawdbot.json and the agent workspace")
+    .description("Initialize ~/.clawdis/clawdis.json and the agent workspace")
     .option(
       "--workspace <dir>",
       "Agent workspace directory (default: ~/clawd; stored as agent.workspace)",
@@ -182,7 +165,7 @@ export function buildProgram() {
     .option("--mode <mode>", "Wizard mode: local|remote")
     .option("--auth-choice <choice>", "Auth: oauth|apiKey|minimax|skip")
     .option("--anthropic-api-key <key>", "Anthropic API key")
-    .option("--gateway-port <port>", "Gateway port")
+    .option("--gateway-port <port>", "Gateway port", "18789")
     .option("--gateway-bind <mode>", "Gateway bind: loopback|lan|tailnet|auto")
     .option("--gateway-auth <mode>", "Gateway auth: off|token|password")
     .option("--gateway-token <token>", "Gateway token (token auth)")
@@ -210,10 +193,10 @@ export function buildProgram() {
               | "skip"
               | undefined,
             anthropicApiKey: opts.anthropicApiKey as string | undefined,
-            gatewayPort:
-              typeof opts.gatewayPort === "string"
-                ? Number.parseInt(opts.gatewayPort, 10)
-                : undefined,
+            gatewayPort: Number.parseInt(
+              String(opts.gatewayPort ?? "18789"),
+              10,
+            ),
             gatewayBind: opts.gatewayBind as
               | "loopback"
               | "lan"
@@ -247,7 +230,6 @@ export function buildProgram() {
 
   program
     .command("configure")
-    .alias("config")
     .description(
       "Interactive wizard to update models, providers, skills, and gateway",
     )
@@ -317,7 +299,7 @@ export function buildProgram() {
   program
     .command("send")
     .description(
-      "Send a message (WhatsApp Web, Telegram bot, Discord, Slack, Signal, iMessage)",
+      "Send a message (WhatsApp Web, Telegram bot, Discord, Signal, iMessage)",
     )
     .requiredOption(
       "-t, --to <number>",
@@ -329,13 +311,8 @@ export function buildProgram() {
       "Attach media (image/audio/video/document). Accepts local paths or URLs.",
     )
     .option(
-      "--gif-playback",
-      "Treat video media as GIF playback (WhatsApp only).",
-      false,
-    )
-    .option(
       "--provider <provider>",
-      "Delivery provider: whatsapp|telegram|discord|slack|signal|imessage (default: whatsapp)",
+      "Delivery provider: whatsapp|telegram|discord|signal|imessage (default: whatsapp)",
     )
     .option("--dry-run", "Print payload and skip sending", false)
     .option("--json", "Output result as JSON", false)
@@ -344,10 +321,10 @@ export function buildProgram() {
       "after",
       `
 Examples:
-  clawdbot send --to +15555550123 --message "Hi"
-  clawdbot send --to +15555550123 --message "Hi" --media photo.jpg
-  clawdbot send --to +15555550123 --message "Hi" --dry-run      # print payload only
-  clawdbot send --to +15555550123 --message "Hi" --json         # machine-readable result`,
+  clawdis send --to +15555550123 --message "Hi"
+  clawdis send --to +15555550123 --message "Hi" --media photo.jpg
+  clawdis send --to +15555550123 --message "Hi" --dry-run      # print payload only
+  clawdis send --to +15555550123 --message "Hi" --json         # machine-readable result`,
     )
     .action(async (opts) => {
       setVerbose(Boolean(opts.verbose));
@@ -378,7 +355,7 @@ Examples:
     .option("--verbose <on|off>", "Persist agent verbose level for the session")
     .option(
       "--provider <provider>",
-      "Delivery provider: whatsapp|telegram|discord|slack|signal|imessage (default: whatsapp)",
+      "Delivery provider: whatsapp|telegram|discord|signal|imessage (default: whatsapp)",
     )
     .option(
       "--deliver",
@@ -394,10 +371,10 @@ Examples:
       "after",
       `
 Examples:
-  clawdbot agent --to +15555550123 --message "status update"
-  clawdbot agent --session-id 1234 --message "Summarize inbox" --thinking medium
-  clawdbot agent --to +15555550123 --message "Trace logs" --verbose on --json
-  clawdbot agent --to +15555550123 --message "Summon reply" --deliver
+  clawdis agent --to +15555550123 --message "status update"
+  clawdis agent --session-id 1234 --message "Summarize inbox" --thinking medium
+  clawdis agent --to +15555550123 --message "Trace logs" --verbose on --json
+  clawdis agent --to +15555550123 --message "Summon reply" --deliver
 `,
     )
     .action(async (opts) => {
@@ -416,9 +393,7 @@ Examples:
 
   registerCanvasCli(program);
   registerGatewayCli(program);
-  registerModelsCli(program);
   registerNodesCli(program);
-  registerTuiCli(program);
   registerCronCli(program);
   registerDnsCli(program);
   registerHooksCli(program);
@@ -429,7 +404,7 @@ Examples:
     .option("--json", "Output JSON instead of text", false)
     .option(
       "--deep",
-      "Probe providers (WhatsApp Web + Telegram + Discord + Slack + Signal)",
+      "Probe providers (WhatsApp Web + Telegram + Discord + Signal)",
       false,
     )
     .option("--timeout <ms>", "Probe timeout in milliseconds", "10000")
@@ -438,10 +413,10 @@ Examples:
       "after",
       `
 Examples:
-  clawdbot status                   # show linked account + session store summary
-  clawdbot status --json            # machine-readable output
-  clawdbot status --deep            # run provider probes (WA + Telegram + Discord + Slack + Signal)
-  clawdbot status --deep --timeout 5000 # tighten probe timeout`,
+  clawdis status                   # show linked account + session store summary
+  clawdis status --json            # machine-readable output
+  clawdis status --deep            # run provider probes (WA + Telegram + Discord + Signal)
+  clawdis status --deep --timeout 5000 # tighten probe timeout`,
     )
     .action(async (opts) => {
       setVerbose(Boolean(opts.verbose));
@@ -519,10 +494,10 @@ Examples:
       "after",
       `
 Examples:
-  clawdbot sessions                 # list all sessions
-  clawdbot sessions --active 120    # only last 2 hours
-  clawdbot sessions --json          # machine-readable output
-  clawdbot sessions --store ./tmp/sessions.json
+  clawdis sessions                 # list all sessions
+  clawdis sessions --active 120    # only last 2 hours
+  clawdis sessions --json          # machine-readable output
+  clawdis sessions --store ./tmp/sessions.json
 
 Shows token usage per session when the agent reports it; set agent.contextTokens to see % of your model window.`,
     )
