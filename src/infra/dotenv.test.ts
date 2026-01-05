@@ -12,7 +12,7 @@ async function writeEnvFile(filePath: string, contents: string) {
 }
 
 describe("loadDotEnv", () => {
-  it("loads ~/.clawdbot/.env as fallback without overriding CWD .env", async () => {
+  it("loads ~/.clawdis/.env as fallback without overriding CWD .env", async () => {
     const prevEnv = { ...process.env };
     const prevCwd = process.cwd();
 

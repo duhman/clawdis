@@ -272,11 +272,15 @@ Deploy the gateway to an always-on VPS for 24/7 availability across all devices.
   "gateway": {
     "mode": "local",
     "bind": "tailnet",
-    "auth": { "mode": "token", "token": "..." }
+    "auth": { "mode": "token", "token": "...", "allowTailscale": true }
   },
-  "agent": { "workspace": "/home/clawdis/clawd" },
-  "web": { "enabled": true },
-  "discord": { "enabled": true }
+  "agent": { "workspace": "/home/clawdis/clawd", "model": "anthropic/claude-sonnet-4-20250514" },
+  "mcp": { "enabled": true, "servers": { "exa": { "command": "npx", "args": ["..."] } } },
+  "web": { "enabled": true, "heartbeatSeconds": 60 },
+  "whatsapp": { "enabled": true, "allowFrom": ["+46761403574", "+46791422723"] },
+  "telegram": { "enabled": true, "botToken": "..." },
+  "discord": { "enabled": true },
+  "logging": { "file": "/var/log/clawdis/clawdis.log", "consoleLevel": "info" }
 }
 ```
 
@@ -321,6 +325,152 @@ launchctl list | grep clawdis.workspace-sync
 - `skills/` (diary, persistent-memory, capture-learning, feedback)
 - `canvas/`
 - Symlinks are resolved to actual content
+
+### Provider Setup (WhatsApp, Telegram, Discord)
+
+#### Current Provider Status
+
+| Provider | Account | Config Key |
+|----------|---------|------------|
+| WhatsApp | +46761403574 | `whatsapp.enabled` |
+| Telegram | @Clarpbot | `telegram.botToken` |
+| Discord | Clawdis#6252 | `discord.enabled` |
+
+#### WhatsApp Setup (Baileys)
+
+WhatsApp uses QR code linking via Baileys library. **QR codes expire in ~20 seconds**.
+
+**To link a new WhatsApp number:**
+
+```bash
+# 1. Clear existing credentials (forces new QR)
+ssh root@srv1209224.hstgr.cloud "rm -rf /home/clawdis/.clawdis/credentials/whatsapp-* && chown -R clawdis:clawdis /home/clawdis/.clawdis/credentials"
+
+# 2. Create QR generator script on VPS
+ssh root@srv1209224.hstgr.cloud 'cat > /tmp/generate-qr.mjs << '\''EOF'\''
+import { writeFileSync } from "node:fs";
+const { createWaSocket } = await import("/opt/clawdis/dist/web/session.js");
+const { renderQrPngBase64 } = await import("/opt/clawdis/dist/web/qr-image.js");
+
+console.log("Starting WhatsApp connection to get QR...");
+let qrReceived = false;
+
+const sock = await createWaSocket(false, false, {
+  onQr: async (qr) => {
+    if (qrReceived) return;
+    qrReceived = true;
+    console.log("QR received, generating PNG...");
+    const base64 = await renderQrPngBase64(qr);
+    writeFileSync("/tmp/whatsapp-qr.png", Buffer.from(base64, "base64"));
+    console.log("QR_SAVED:/tmp/whatsapp-qr.png");
+    console.log("Waiting 2 minutes for you to scan...");
+  }
+});
+
+sock.ev.on("connection.update", (update) => {
+  if (update.connection === "open") {
+    console.log("SUCCESS: WhatsApp connected!");
+    setTimeout(() => process.exit(0), 1000);
+  }
+});
+EOF'
+
+# 3. Run script and download QR (must be quick - QR expires!)
+ssh root@srv1209224.hstgr.cloud "cd /opt/clawdis && sudo -u clawdis node /tmp/generate-qr.mjs &"
+sleep 5
+scp root@srv1209224.hstgr.cloud:/tmp/whatsapp-qr.png /tmp/whatsapp-qr.png
+open /tmp/whatsapp-qr.png  # Scan immediately!
+
+# 4. After successful scan, restart gateway
+ssh root@srv1209224.hstgr.cloud "systemctl restart clawdis-gateway"
+```
+
+**WhatsApp Error Codes:**
+
+| Error | Meaning | Fix |
+|-------|---------|-----|
+| `status=515` | Pairing successful, restart required | `systemctl restart clawdis-gateway` |
+| `Timed out waiting for QR` | QR expired before scan | Generate new QR, scan faster |
+| `Connection Closed` | Session invalidated | Clear credentials, re-link |
+
+**WhatsApp Allowlist:**
+
+Only process messages from specific numbers:
+
+```json
+{
+  "whatsapp": {
+    "enabled": true,
+    "allowFrom": ["+46761403574", "+46791422723"]
+  }
+}
+```
+
+#### Telegram Setup (grammY)
+
+Telegram uses Bot API - no phone verification needed, just a bot token from @BotFather.
+
+```bash
+# 1. Create bot via @BotFather in Telegram
+# 2. Copy the token (format: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz)
+# 3. Add to config
+ssh root@srv1209224.hstgr.cloud 'python3 << EOF
+import json
+with open("/home/clawdis/.clawdis/clawdis.json", "r") as f:
+    cfg = json.load(f)
+cfg["telegram"] = {"enabled": True, "botToken": "YOUR_BOT_TOKEN"}
+with open("/home/clawdis/.clawdis/clawdis.json", "w") as f:
+    json.dump(cfg, f, indent=2)
+EOF'
+
+# 4. Restart gateway
+ssh root@srv1209224.hstgr.cloud "systemctl restart clawdis-gateway"
+```
+
+#### VPS Config File Management
+
+**IMPORTANT**: Never use `scp` to transfer JSON config files - it can truncate them!
+
+```bash
+# BAD - scp can truncate files
+scp config.json root@vps:/path/config.json  # DON'T DO THIS
+
+# GOOD - pipe method preserves content
+cat config.json | ssh root@vps "cat > /path/config.json"
+
+# GOOD - Python for safe JSON updates
+ssh root@vps 'python3 << EOF
+import json
+with open("/home/clawdis/.clawdis/clawdis.json", "r") as f:
+    cfg = json.load(f)
+cfg["whatsapp"]["allowFrom"].append("+46791422723")
+with open("/home/clawdis/.clawdis/clawdis.json", "w") as f:
+    json.dump(cfg, f, indent=2)
+EOF'
+```
+
+#### Provider Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Timed out waiting for WhatsApp QR` | QR expired (~20s lifetime) | Generate PNG, download fast, scan immediately |
+| `status=515 Unknown Stream Errored` | WhatsApp pairing succeeded | Just restart: `systemctl restart clawdis-gateway` |
+| WhatsApp credentials not saving | Root owns credentials dir | `chown -R clawdis:clawdis ~/.clawdis/` |
+| Telegram bot not responding | Missing/invalid token | Get new token from @BotFather |
+| Config file corrupted after scp | scp truncation bug | Use pipe: `cat file \| ssh ... "cat > file"` |
+| Messages not processed | Number not in allowFrom | Add E.164 format: `"+46791422723"` |
+
+#### VPS Permission Issues
+
+The `clawdis` user must own credential directories:
+
+```bash
+# Fix ownership if credentials fail to save
+ssh root@srv1209224.hstgr.cloud "chown -R clawdis:clawdis /home/clawdis/.clawdis/"
+
+# Verify
+ssh root@srv1209224.hstgr.cloud "ls -la /home/clawdis/.clawdis/"
+```
 
 ### Client Configuration (bigmac/minimac)
 
@@ -375,6 +525,9 @@ For SSH-tunnel based remote access (when not using VPS):
 | `unauthorized` after setting token | App not restarted | Quit (Cmd+Q) and relaunch - GUI apps need restart for env vars |
 | Connection refused at 127.0.0.1 | SSH tunnel not establishing | Check SSH target username and identity file path in app settings |
 | Intermittent DNS failures | mDNS unreliable | Use Tailscale IP (e.g., `100.x.x.x`) instead of `.local` hostname |
+| "Gateway not configured" despite defaults set | Debug build uses different plist | Set `defaults write com.steipete.clawdis.debug "clawdis.connectionMode" "remote"` |
+| SSH tunnel "connect failed: Connection refused" | VPS gateway not on 127.0.0.1 | Check systemd ExecStart for `--bind tailnet`, change to `--bind lan` |
+| Settings in plist ignored | Systemd CLI args override config | Edit `/etc/systemd/system/clawdis-gateway.service`, then `systemctl daemon-reload` |
 
 ### Remote Mode: Complete Setup Example
 

@@ -1,19 +1,8 @@
-import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
-import path from "node:path";
 
-import type { AppMessage, ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { AgentTool, AgentToolResult } from "@mariozechner/pi-ai";
-import {
-  type Api,
-  type AssistantMessage,
-  getEnvApiKey,
-  getOAuthApiKey,
-  type Model,
-  type OAuthCredentials,
-  type OAuthProvider,
-} from "@mariozechner/pi-ai";
+import type { AgentMessage, ThinkingLevel } from "@mariozechner/pi-agent-core";
+import type { Api, AssistantMessage, Model } from "@mariozechner/pi-ai";
 import {
   buildSystemPrompt,
   createAgentSession,
@@ -25,28 +14,36 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { ThinkLevel, VerboseLevel } from "../auto-reply/thinking.js";
 import { formatToolAggregate } from "../auto-reply/tool-meta.js";
-import type { ClawdisConfig } from "../config/config.js";
-import { createHookRunner, type HookRunner } from "../infra/hooks/runner.js";
+import type { ClawdbotConfig } from "../config/config.js";
 import { getMachineDisplayName } from "../infra/machine-name.js";
+import { createSubsystemLogger } from "../logging.js";
 import { splitMediaFromOutput } from "../media/parse.js";
 import {
   type enqueueCommand,
   enqueueCommandInLane,
 } from "../process/command-queue.js";
-import { CONFIG_DIR, resolveUserPath } from "../utils.js";
-import { resolveClawdisAgentDir } from "./agent-paths.js";
+import { resolveUserPath } from "../utils.js";
+import { resolveClawdbotAgentDir } from "./agent-paths.js";
+import type { BashElevatedDefaults } from "./bash-tools.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
-import { createMcpTools } from "./mcp-tools.js";
-import { ensureClawdisModelsJson } from "./models-config.js";
+import { getApiKeyForModel } from "./model-auth.js";
+import { ensureClawdbotModelsJson } from "./models-config.js";
 import {
   buildBootstrapContextFiles,
   ensureSessionHeader,
   formatAssistantErrorText,
+  isRateLimitAssistantError,
+  pickFallbackThinkingLevel,
   sanitizeSessionMessagesImages,
 } from "./pi-embedded-helpers.js";
-import { subscribeEmbeddedPiSession } from "./pi-embedded-subscribe.js";
+import {
+  type BlockReplyChunking,
+  subscribeEmbeddedPiSession,
+} from "./pi-embedded-subscribe.js";
 import { extractAssistantText } from "./pi-embedded-utils.js";
-import { createClawdisCodingTools } from "./pi-tools.js";
+import { toToolDefinitions } from "./pi-tool-definition-adapter.js";
+import { createClawdbotCodingTools } from "./pi-tools.js";
+import { resolveSandboxContext } from "./sandbox.js";
 import {
   applySkillEnvOverrides,
   applySkillEnvOverridesFromSnapshot,
@@ -82,6 +79,7 @@ export type EmbeddedPiRunResult = {
     text?: string;
     mediaUrl?: string;
     mediaUrls?: string[];
+    replyToId?: string;
   }>;
   meta: EmbeddedPiRunMeta;
 };
@@ -92,13 +90,21 @@ type EmbeddedPiQueueHandle = {
   abort: () => void;
 };
 
+const log = createSubsystemLogger("agent/embedded");
+
 const ACTIVE_EMBEDDED_RUNS = new Map<string, EmbeddedPiQueueHandle>();
+type EmbeddedRunWaiter = {
+  resolve: (ended: boolean) => void;
+  timer: NodeJS.Timeout;
+};
+const EMBEDDED_RUN_WAITERS = new Map<string, Set<EmbeddedRunWaiter>>();
 
-const OAUTH_FILENAME = "oauth.json";
-const DEFAULT_OAUTH_DIR = path.join(CONFIG_DIR, "credentials");
-let oauthStorageConfigured = false;
-
-type OAuthStorage = Record<string, OAuthCredentials>;
+type EmbeddedSandboxInfo = {
+  enabled: boolean;
+  workspaceDir?: string;
+  browserControlUrl?: string;
+  browserNoVncUrl?: string;
+};
 
 function resolveSessionLane(key: string) {
   const cleaned = key.trim() || "main";
@@ -110,90 +116,67 @@ function resolveGlobalLane(lane?: string) {
   return cleaned ? cleaned : "main";
 }
 
-function resolveClawdisOAuthPath(): string {
-  const overrideDir =
-    process.env.CLAWDIS_OAUTH_DIR?.trim() || DEFAULT_OAUTH_DIR;
-  return path.join(resolveUserPath(overrideDir), OAUTH_FILENAME);
+function resolveUserTimezone(configured?: string): string {
+  const trimmed = configured?.trim();
+  if (trimmed) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).format(
+        new Date(),
+      );
+      return trimmed;
+    } catch {
+      // ignore invalid timezone
+    }
+  }
+  const host = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return host?.trim() || "UTC";
 }
 
-function loadOAuthStorageAt(pathname: string): OAuthStorage | null {
-  if (!fsSync.existsSync(pathname)) return null;
+function formatUserTime(date: Date, timeZone: string): string | undefined {
   try {
-    const content = fsSync.readFileSync(pathname, "utf8");
-    const json = JSON.parse(content) as OAuthStorage;
-    if (!json || typeof json !== "object") return null;
-    return json;
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(date);
+    const map: Record<string, string> = {};
+    for (const part of parts) {
+      if (part.type !== "literal") map[part.type] = part.value;
+    }
+    if (!map.year || !map.month || !map.day || !map.hour || !map.minute) {
+      return undefined;
+    }
+    return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}`;
   } catch {
-    return null;
+    return undefined;
   }
 }
 
-function hasAnthropicOAuth(storage: OAuthStorage): boolean {
-  const entry = storage.anthropic as
-    | {
-        refresh?: string;
-        refresh_token?: string;
-        refreshToken?: string;
-        access?: string;
-        access_token?: string;
-        accessToken?: string;
-      }
-    | undefined;
-  if (!entry) return false;
-  const refresh =
-    entry.refresh ?? entry.refresh_token ?? entry.refreshToken ?? "";
-  const access = entry.access ?? entry.access_token ?? entry.accessToken ?? "";
-  return Boolean(refresh.trim() && access.trim());
-}
-
-function saveOAuthStorageAt(pathname: string, storage: OAuthStorage): void {
-  const dir = path.dirname(pathname);
-  fsSync.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fsSync.writeFileSync(
-    pathname,
-    `${JSON.stringify(storage, null, 2)}\n`,
-    "utf8",
-  );
-  fsSync.chmodSync(pathname, 0o600);
-}
-
-function legacyOAuthPaths(): string[] {
-  const paths: string[] = [];
-  const piOverride = process.env.PI_CODING_AGENT_DIR?.trim();
-  if (piOverride) {
-    paths.push(path.join(resolveUserPath(piOverride), OAUTH_FILENAME));
-  }
-  paths.push(path.join(os.homedir(), ".pi", "agent", OAUTH_FILENAME));
-  paths.push(path.join(os.homedir(), ".claude", OAUTH_FILENAME));
-  paths.push(path.join(os.homedir(), ".config", "claude", OAUTH_FILENAME));
-  paths.push(path.join(os.homedir(), ".config", "anthropic", OAUTH_FILENAME));
-  return Array.from(new Set(paths));
-}
-
-function importLegacyOAuthIfNeeded(destPath: string): void {
-  if (fsSync.existsSync(destPath)) return;
-  for (const legacyPath of legacyOAuthPaths()) {
-    const storage = loadOAuthStorageAt(legacyPath);
-    if (!storage || !hasAnthropicOAuth(storage)) continue;
-    saveOAuthStorageAt(destPath, storage);
-    return;
+function describeUnknownError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    const serialized = JSON.stringify(error);
+    return serialized ?? "Unknown error";
+  } catch {
+    return "Unknown error";
   }
 }
 
-function ensureOAuthStorage(): void {
-  if (oauthStorageConfigured) return;
-  oauthStorageConfigured = true;
-  const oauthPath = resolveClawdisOAuthPath();
-  importLegacyOAuthIfNeeded(oauthPath);
-}
-
-function isOAuthProvider(provider: string): provider is OAuthProvider {
-  return (
-    provider === "anthropic" ||
-    provider === "github-copilot" ||
-    provider === "google-gemini-cli" ||
-    provider === "google-antigravity"
-  );
+export function buildEmbeddedSandboxInfo(
+  sandbox?: Awaited<ReturnType<typeof resolveSandboxContext>>,
+): EmbeddedSandboxInfo | undefined {
+  if (!sandbox?.enabled) return undefined;
+  return {
+    enabled: true,
+    workspaceDir: sandbox.workspaceDir,
+    browserControlUrl: sandbox.browser?.controlUrl,
+    browserNoVncUrl: sandbox.browser?.noVncUrl,
+  };
 }
 
 export function queueEmbeddedPiMessage(
@@ -224,12 +207,52 @@ export function isEmbeddedPiRunStreaming(sessionId: string): boolean {
   return handle.isStreaming();
 }
 
+export function waitForEmbeddedPiRunEnd(
+  sessionId: string,
+  timeoutMs = 15_000,
+): Promise<boolean> {
+  if (!sessionId || !ACTIVE_EMBEDDED_RUNS.has(sessionId))
+    return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const waiters = EMBEDDED_RUN_WAITERS.get(sessionId) ?? new Set();
+    const waiter: EmbeddedRunWaiter = {
+      resolve,
+      timer: setTimeout(
+        () => {
+          waiters.delete(waiter);
+          if (waiters.size === 0) EMBEDDED_RUN_WAITERS.delete(sessionId);
+          resolve(false);
+        },
+        Math.max(100, timeoutMs),
+      ),
+    };
+    waiters.add(waiter);
+    EMBEDDED_RUN_WAITERS.set(sessionId, waiters);
+    if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
+      waiters.delete(waiter);
+      if (waiters.size === 0) EMBEDDED_RUN_WAITERS.delete(sessionId);
+      clearTimeout(waiter.timer);
+      resolve(true);
+    }
+  });
+}
+
+function notifyEmbeddedRunEnded(sessionId: string) {
+  const waiters = EMBEDDED_RUN_WAITERS.get(sessionId);
+  if (!waiters || waiters.size === 0) return;
+  EMBEDDED_RUN_WAITERS.delete(sessionId);
+  for (const waiter of waiters) {
+    clearTimeout(waiter.timer);
+    waiter.resolve(true);
+  }
+}
+
 export function resolveEmbeddedSessionLane(key: string) {
   return resolveSessionLane(key);
 }
 
 function mapThinkingLevel(level?: ThinkLevel): ThinkingLevel {
-  // pi-agent-core supports "xhigh" too; Clawdis doesn't surface it for now.
+  // pi-agent-core supports "xhigh" too; Clawdbot doesn't surface it for now.
   if (!level) return "off";
   return level;
 }
@@ -244,7 +267,7 @@ function resolveModel(
   authStorage: ReturnType<typeof discoverAuthStorage>;
   modelRegistry: ReturnType<typeof discoverModels>;
 } {
-  const resolvedAgentDir = agentDir ?? resolveClawdisAgentDir();
+  const resolvedAgentDir = agentDir ?? resolveClawdbotAgentDir();
   const authStorage = discoverAuthStorage(resolvedAgentDir);
   const modelRegistry = discoverModels(authStorage, resolvedAgentDir);
   const model = modelRegistry.find(provider, modelId) as Model<Api> | null;
@@ -256,38 +279,6 @@ function resolveModel(
     };
   }
   return { model, authStorage, modelRegistry };
-}
-
-async function getApiKeyForModel(
-  model: Model<Api>,
-  authStorage: ReturnType<typeof discoverAuthStorage>,
-): Promise<string> {
-  const storedKey = await authStorage.getApiKey(model.provider);
-  if (storedKey) return storedKey;
-  ensureOAuthStorage();
-  if (model.provider === "anthropic") {
-    const oauthEnv = process.env.ANTHROPIC_OAUTH_TOKEN;
-    if (oauthEnv?.trim()) return oauthEnv.trim();
-  }
-  const envKey = getEnvApiKey(model.provider);
-  if (envKey) return envKey;
-  if (isOAuthProvider(model.provider)) {
-    const oauthPath = resolveClawdisOAuthPath();
-    const storage = loadOAuthStorageAt(oauthPath);
-    if (storage) {
-      try {
-        const result = await getOAuthApiKey(model.provider, storage);
-        if (result?.apiKey) {
-          storage[model.provider] = result.newCredentials;
-          saveOAuthStorageAt(oauthPath, storage);
-          return result.apiKey;
-        }
-      } catch {
-        // fall through to error below
-      }
-    }
-  }
-  throw new Error(`No API key found for provider "${model.provider}"`);
 }
 
 function resolvePromptSkills(
@@ -309,75 +300,20 @@ function resolvePromptSkills(
     .filter((skill): skill is Skill => Boolean(skill));
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: AgentTool type flexibility
-type AnyAgentTool = AgentTool<any, unknown>;
-
-/**
- * Wrap tools with hook execution (PreToolUse, PostToolUse).
- */
-function wrapToolsWithHooks(
-  tools: AnyAgentTool[],
-  hookRunner: HookRunner | null,
-  sessionKey?: string,
-): AnyAgentTool[] {
-  if (!hookRunner || !hookRunner.isEnabled) {
-    return tools;
-  }
-
-  return tools.map((tool) => ({
-    ...tool,
-    execute: async (
-      toolCallId: string,
-      args: unknown,
-    ): Promise<AgentToolResult<unknown>> => {
-      const toolArgs = (args ?? {}) as Record<string, unknown>;
-
-      // PreToolUse: check if tool should be blocked
-      const preCheck = await hookRunner.checkPreToolUse(
-        tool.name,
-        toolArgs,
-        sessionKey,
-      );
-
-      if (!preCheck.allowed) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `[Hook blocked] ${preCheck.blockReason ?? "Tool execution blocked by hook"}`,
-            },
-          ],
-          details: { blocked: true, reason: preCheck.blockReason },
-        };
-      }
-
-      // Execute the original tool
-      const result = await tool.execute(toolCallId, args);
-
-      // PostToolUse: notify hooks (non-blocking)
-      hookRunner
-        .runPostToolUse(tool.name, toolArgs, result, sessionKey)
-        .catch((err) => {
-          console.error(`[Hooks] PostToolUse error for ${tool.name}:`, err);
-        });
-
-      return result;
-    },
-  }));
-}
-
 export async function runEmbeddedPiAgent(params: {
   sessionId: string;
   sessionKey?: string;
+  surface?: string;
   sessionFile: string;
   workspaceDir: string;
-  config?: ClawdisConfig;
+  config?: ClawdbotConfig;
   skillsSnapshot?: SkillSnapshot;
   prompt: string;
   provider?: string;
   model?: string;
   thinkLevel?: ThinkLevel;
   verboseLevel?: VerboseLevel;
+  bashElevated?: BashElevatedDefaults;
   timeoutMs: number;
   runId: string;
   abortSignal?: AbortSignal;
@@ -386,6 +322,12 @@ export async function runEmbeddedPiAgent(params: {
     text?: string;
     mediaUrls?: string[];
   }) => void | Promise<void>;
+  onBlockReply?: (payload: {
+    text?: string;
+    mediaUrls?: string[];
+  }) => void | Promise<void>;
+  blockReplyBreak?: "text_end" | "message_end";
+  blockReplyChunking?: BlockReplyChunking;
   onToolResult?: (payload: {
     text?: string;
     mediaUrls?: string[];
@@ -416,8 +358,8 @@ export async function runEmbeddedPiAgent(params: {
       const provider =
         (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
       const modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
-      await ensureClawdisModelsJson(params.config);
-      const agentDir = resolveClawdisAgentDir();
+      await ensureClawdbotModelsJson(params.config);
+      const agentDir = resolveClawdbotAgentDir();
       const { model, error, authStorage, modelRegistry } = resolveModel(
         provider,
         modelId,
@@ -429,277 +371,364 @@ export async function runEmbeddedPiAgent(params: {
       const apiKey = await getApiKeyForModel(model, authStorage);
       authStorage.setRuntimeApiKey(model.provider, apiKey);
 
-      const thinkingLevel = mapThinkingLevel(params.thinkLevel);
+      let thinkLevel = params.thinkLevel ?? "off";
+      const attemptedThinking = new Set<ThinkLevel>();
 
-      await fs.mkdir(resolvedWorkspace, { recursive: true });
-      await ensureSessionHeader({
-        sessionFile: params.sessionFile,
-        sessionId: params.sessionId,
-        cwd: resolvedWorkspace,
-      });
+      while (true) {
+        const thinkingLevel = mapThinkingLevel(thinkLevel);
+        attemptedThinking.add(thinkLevel);
 
-      let restoreSkillEnv: (() => void) | undefined;
-      process.chdir(resolvedWorkspace);
-      try {
-        const shouldLoadSkillEntries =
-          !params.skillsSnapshot || !params.skillsSnapshot.resolvedSkills;
-        const skillEntries = shouldLoadSkillEntries
-          ? loadWorkspaceSkillEntries(resolvedWorkspace)
-          : [];
-        const skillsSnapshot =
-          params.skillsSnapshot ??
-          buildWorkspaceSkillSnapshot(resolvedWorkspace, {
-            config: params.config,
-            entries: skillEntries,
-          });
-        restoreSkillEnv = params.skillsSnapshot
-          ? applySkillEnvOverridesFromSnapshot({
-              snapshot: params.skillsSnapshot,
-              config: params.config,
-            })
-          : applySkillEnvOverrides({
-              skills: skillEntries ?? [],
-              config: params.config,
-            });
-
-        const bootstrapFiles =
-          await loadWorkspaceBootstrapFiles(resolvedWorkspace);
-        const contextFiles = buildBootstrapContextFiles(bootstrapFiles);
-        const promptSkills = resolvePromptSkills(skillsSnapshot, skillEntries);
-
-        // Initialize MCP tools if configured
-        const mcpTools = params.config?.mcp
-          ? await createMcpTools(params.config.mcp)
-          : [];
-
-        const codingTools = createClawdisCodingTools({
-          bash: params.config?.agent?.bash,
-        });
-
-        // Initialize hook runner if configured
-        const hookRunner = createHookRunner(params.config?.agentHooks);
-
-        // Merge coding tools with MCP tools, then wrap with hooks
-        const baseTools = [...codingTools, ...mcpTools];
-        const tools = wrapToolsWithHooks(
-          baseTools,
-          hookRunner,
-          params.sessionKey,
+        log.debug(
+          `embedded run start: runId=${params.runId} sessionId=${params.sessionId} provider=${provider} model=${modelId} thinking=${thinkLevel} surface=${params.surface ?? "unknown"}`,
         );
-        const machineName = await getMachineDisplayName();
-        const runtimeInfo = {
-          host: machineName,
-          os: `${os.type()} ${os.release()}`,
-          arch: os.arch(),
-          node: process.version,
-          model: `${provider}/${modelId}`,
-        };
-        const reasoningTagHint = provider === "ollama";
-        const systemPrompt = buildSystemPrompt({
-          appendPrompt: buildAgentSystemPromptAppend({
-            workspaceDir: resolvedWorkspace,
-            defaultThinkLevel: params.thinkLevel,
-            extraSystemPrompt: params.extraSystemPrompt,
-            ownerNumbers: params.ownerNumbers,
-            reasoningTagHint,
-            runtimeInfo,
-          }),
-          contextFiles,
-          skills: promptSkills,
+
+        await fs.mkdir(resolvedWorkspace, { recursive: true });
+        await ensureSessionHeader({
+          sessionFile: params.sessionFile,
+          sessionId: params.sessionId,
           cwd: resolvedWorkspace,
-          tools,
         });
 
-        const sessionManager = SessionManager.open(params.sessionFile);
-        const settingsManager = SettingsManager.create(
-          resolvedWorkspace,
-          agentDir,
-        );
-
-        const { session } = await createAgentSession({
-          cwd: resolvedWorkspace,
-          agentDir,
-          authStorage,
-          modelRegistry,
-          model,
-          thinkingLevel,
-          systemPrompt,
-          // TODO(steipete): Once pi-mono publishes file-magic MIME detection in `read` image payloads,
-          // remove `createClawdisCodingTools()` and use upstream `codingTools` again.
-          tools,
-          sessionManager,
-          settingsManager,
-          skills: promptSkills,
-          contextFiles,
-        });
-
-        const prior = await sanitizeSessionMessagesImages(
-          session.messages,
-          "session:history",
-        );
-        if (prior.length > 0) {
-          session.agent.replaceMessages(prior);
-        }
-        let aborted = Boolean(params.abortSignal?.aborted);
-        const abortRun = () => {
-          aborted = true;
-          void session.abort();
-        };
-        const queueHandle: EmbeddedPiQueueHandle = {
-          queueMessage: async (text: string) => {
-            await session.queueMessage(text);
-          },
-          isStreaming: () => session.isStreaming,
-          abort: abortRun,
-        };
-        ACTIVE_EMBEDDED_RUNS.set(params.sessionId, queueHandle);
-
-        const {
-          assistantTexts,
-          toolMetas,
-          unsubscribe,
-          flush: flushToolDebouncer,
-          waitForCompactionRetry,
-        } = subscribeEmbeddedPiSession({
-          session,
-          runId: params.runId,
-          verboseLevel: params.verboseLevel,
-          shouldEmitToolResult: params.shouldEmitToolResult,
-          onToolResult: params.onToolResult,
-          onPartialReply: params.onPartialReply,
-          onAgentEvent: params.onAgentEvent,
-          enforceFinalTag: params.enforceFinalTag,
-        });
-
-        const abortTimer = setTimeout(
-          () => {
-            abortRun();
-          },
-          Math.max(1, params.timeoutMs),
-        );
-
-        let messagesSnapshot: AppMessage[] = [];
-        let sessionIdUsed = session.sessionId;
-        const onAbort = () => {
-          abortRun();
-        };
-        if (params.abortSignal) {
-          if (params.abortSignal.aborted) {
-            onAbort();
-          } else {
-            params.abortSignal.addEventListener("abort", onAbort, {
-              once: true,
-            });
-          }
-        }
-        let promptError: unknown = null;
+        let restoreSkillEnv: (() => void) | undefined;
+        process.chdir(resolvedWorkspace);
         try {
-          try {
-            await session.prompt(params.prompt);
-          } catch (err) {
-            promptError = err;
-          }
-
-          // Run PostAgentTurn hooks (non-blocking)
-          if (hookRunner?.isEnabled) {
-            hookRunner.runPostAgentTurn(params.sessionKey).catch((err) => {
-              console.error("[Hooks] PostAgentTurn error:", err);
+          const shouldLoadSkillEntries =
+            !params.skillsSnapshot || !params.skillsSnapshot.resolvedSkills;
+          const skillEntries = shouldLoadSkillEntries
+            ? loadWorkspaceSkillEntries(resolvedWorkspace)
+            : [];
+          const skillsSnapshot =
+            params.skillsSnapshot ??
+            buildWorkspaceSkillSnapshot(resolvedWorkspace, {
+              config: params.config,
+              entries: skillEntries,
             });
-          }
+          const sandboxSessionKey =
+            params.sessionKey?.trim() || params.sessionId;
+          const sandbox = await resolveSandboxContext({
+            config: params.config,
+            sessionKey: sandboxSessionKey,
+            workspaceDir: resolvedWorkspace,
+          });
+          restoreSkillEnv = params.skillsSnapshot
+            ? applySkillEnvOverridesFromSnapshot({
+                snapshot: params.skillsSnapshot,
+                config: params.config,
+              })
+            : applySkillEnvOverrides({
+                skills: skillEntries ?? [],
+                config: params.config,
+              });
 
-          await waitForCompactionRetry();
-          messagesSnapshot = session.messages.slice();
-          sessionIdUsed = session.sessionId;
-        } finally {
-          clearTimeout(abortTimer);
-          unsubscribe();
-          flushToolDebouncer();
-          if (ACTIVE_EMBEDDED_RUNS.get(params.sessionId) === queueHandle) {
-            ACTIVE_EMBEDDED_RUNS.delete(params.sessionId);
-          }
-          session.dispose();
-          params.abortSignal?.removeEventListener?.("abort", onAbort);
-        }
-        if (promptError && !aborted) {
-          throw promptError;
-        }
+          const bootstrapFiles =
+            await loadWorkspaceBootstrapFiles(resolvedWorkspace);
+          const contextFiles = buildBootstrapContextFiles(bootstrapFiles);
+          const promptSkills = resolvePromptSkills(
+            skillsSnapshot,
+            skillEntries,
+          );
+          // Tool schemas must be provider-compatible (OpenAI requires top-level `type: "object"`).
+          // `createClawdbotCodingTools()` normalizes schemas so the session can pass them through unchanged.
+          const tools = createClawdbotCodingTools({
+            bash: {
+              ...params.config?.agent?.bash,
+              elevated: params.bashElevated,
+            },
+            sandbox,
+            surface: params.surface,
+            sessionKey: params.sessionKey ?? params.sessionId,
+            config: params.config,
+          });
+          const machineName = await getMachineDisplayName();
+          const runtimeInfo = {
+            host: machineName,
+            os: `${os.type()} ${os.release()}`,
+            arch: os.arch(),
+            node: process.version,
+            model: `${provider}/${modelId}`,
+          };
+          const sandboxInfo = buildEmbeddedSandboxInfo(sandbox);
+          const reasoningTagHint = provider === "ollama";
+          const userTimezone = resolveUserTimezone(
+            params.config?.agent?.userTimezone,
+          );
+          const userTime = formatUserTime(new Date(), userTimezone);
+          const systemPrompt = buildSystemPrompt({
+            appendPrompt: buildAgentSystemPromptAppend({
+              workspaceDir: resolvedWorkspace,
+              defaultThinkLevel: thinkLevel,
+              extraSystemPrompt: params.extraSystemPrompt,
+              ownerNumbers: params.ownerNumbers,
+              reasoningTagHint,
+              runtimeInfo,
+              sandboxInfo,
+              toolNames: tools.map((tool) => tool.name),
+              userTimezone,
+              userTime,
+            }),
+            contextFiles,
+            skills: promptSkills,
+            cwd: resolvedWorkspace,
+            tools,
+          });
 
-        const lastAssistant = messagesSnapshot
-          .slice()
-          .reverse()
-          .find((m) => (m as AppMessage)?.role === "assistant") as
-          | AssistantMessage
-          | undefined;
-
-        const usage = lastAssistant?.usage;
-        const agentMeta: EmbeddedPiAgentMeta = {
-          sessionId: sessionIdUsed,
-          provider: lastAssistant?.provider ?? provider,
-          model: lastAssistant?.model ?? model.id,
-          usage: usage
-            ? {
-                input: usage.input,
-                output: usage.output,
-                cacheRead: usage.cacheRead,
-                cacheWrite: usage.cacheWrite,
-                total: usage.totalTokens,
-              }
-            : undefined,
-        };
-
-        const replyItems: Array<{ text: string; media?: string[] }> = [];
-
-        const errorText = lastAssistant
-          ? formatAssistantErrorText(lastAssistant)
-          : undefined;
-        if (errorText) replyItems.push({ text: errorText });
-
-        const inlineToolResults =
-          params.verboseLevel === "on" &&
-          !params.onPartialReply &&
-          !params.onToolResult &&
-          toolMetas.length > 0;
-        if (inlineToolResults) {
-          for (const { toolName, meta } of toolMetas) {
-            const agg = formatToolAggregate(toolName, meta ? [meta] : []);
-            const { text: cleanedText, mediaUrls } = splitMediaFromOutput(agg);
-            if (cleanedText)
-              replyItems.push({ text: cleanedText, media: mediaUrls });
-          }
-        }
-
-        for (const text of assistantTexts.length
-          ? assistantTexts
-          : lastAssistant
-            ? [extractAssistantText(lastAssistant)]
-            : []) {
-          const { text: cleanedText, mediaUrls } = splitMediaFromOutput(text);
-          if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) continue;
-          replyItems.push({ text: cleanedText, media: mediaUrls });
-        }
-
-        const payloads = replyItems
-          .map((item) => ({
-            text: item.text?.trim() ? item.text.trim() : undefined,
-            mediaUrls: item.media?.length ? item.media : undefined,
-            mediaUrl: item.media?.[0],
-          }))
-          .filter(
-            (p) =>
-              p.text || p.mediaUrl || (p.mediaUrls && p.mediaUrls.length > 0),
+          const sessionManager = SessionManager.open(params.sessionFile);
+          const settingsManager = SettingsManager.create(
+            resolvedWorkspace,
+            agentDir,
           );
 
-        return {
-          payloads: payloads.length ? payloads : undefined,
-          meta: {
-            durationMs: Date.now() - started,
-            agentMeta,
-            aborted,
-          },
-        };
-      } finally {
-        restoreSkillEnv?.();
-        process.chdir(prevCwd);
+          // Split tools into built-in (recognized by pi-coding-agent SDK) and custom (clawdbot-specific)
+          const builtInToolNames = new Set(["read", "bash", "edit", "write"]);
+          const builtInTools = tools.filter((t) =>
+            builtInToolNames.has(t.name),
+          );
+          const customTools = toToolDefinitions(
+            tools.filter((t) => !builtInToolNames.has(t.name)),
+          );
+
+          const { session } = await createAgentSession({
+            cwd: resolvedWorkspace,
+            agentDir,
+            authStorage,
+            modelRegistry,
+            model,
+            thinkingLevel,
+            systemPrompt,
+            // Built-in tools recognized by pi-coding-agent SDK
+            tools: builtInTools,
+            // Custom clawdbot tools (browser, canvas, nodes, cron, etc.)
+            customTools,
+            sessionManager,
+            settingsManager,
+            skills: promptSkills,
+            contextFiles,
+          });
+
+          const prior = await sanitizeSessionMessagesImages(
+            session.messages,
+            "session:history",
+          );
+          if (prior.length > 0) {
+            session.agent.replaceMessages(prior);
+          }
+          let aborted = Boolean(params.abortSignal?.aborted);
+          const abortRun = () => {
+            aborted = true;
+            void session.abort();
+          };
+          const queueHandle: EmbeddedPiQueueHandle = {
+            queueMessage: async (text: string) => {
+              await session.steer(text);
+            },
+            isStreaming: () => session.isStreaming,
+            abort: abortRun,
+          };
+          ACTIVE_EMBEDDED_RUNS.set(params.sessionId, queueHandle);
+
+          const {
+            assistantTexts,
+            toolMetas,
+            unsubscribe,
+            waitForCompactionRetry,
+          } = subscribeEmbeddedPiSession({
+            session,
+            runId: params.runId,
+            verboseLevel: params.verboseLevel,
+            shouldEmitToolResult: params.shouldEmitToolResult,
+            onToolResult: params.onToolResult,
+            onBlockReply: params.onBlockReply,
+            blockReplyBreak: params.blockReplyBreak,
+            blockReplyChunking: params.blockReplyChunking,
+            onPartialReply: params.onPartialReply,
+            onAgentEvent: params.onAgentEvent,
+            enforceFinalTag: params.enforceFinalTag,
+          });
+
+          let abortWarnTimer: NodeJS.Timeout | undefined;
+          const abortTimer = setTimeout(
+            () => {
+              log.warn(
+                `embedded run timeout: runId=${params.runId} sessionId=${params.sessionId} timeoutMs=${params.timeoutMs}`,
+              );
+              abortRun();
+              if (!abortWarnTimer) {
+                abortWarnTimer = setTimeout(() => {
+                  if (!session.isStreaming) return;
+                  log.warn(
+                    `embedded run abort still streaming: runId=${params.runId} sessionId=${params.sessionId}`,
+                  );
+                }, 10_000);
+              }
+            },
+            Math.max(1, params.timeoutMs),
+          );
+
+          let messagesSnapshot: AgentMessage[] = [];
+          let sessionIdUsed = session.sessionId;
+          const onAbort = () => {
+            abortRun();
+          };
+          if (params.abortSignal) {
+            if (params.abortSignal.aborted) {
+              onAbort();
+            } else {
+              params.abortSignal.addEventListener("abort", onAbort, {
+                once: true,
+              });
+            }
+          }
+          let promptError: unknown = null;
+          try {
+            const promptStartedAt = Date.now();
+            log.debug(
+              `embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`,
+            );
+            try {
+              await session.prompt(params.prompt);
+            } catch (err) {
+              promptError = err;
+            } finally {
+              log.debug(
+                `embedded run prompt end: runId=${params.runId} sessionId=${params.sessionId} durationMs=${Date.now() - promptStartedAt}`,
+              );
+            }
+            await waitForCompactionRetry();
+            messagesSnapshot = session.messages.slice();
+            sessionIdUsed = session.sessionId;
+          } finally {
+            clearTimeout(abortTimer);
+            if (abortWarnTimer) {
+              clearTimeout(abortWarnTimer);
+              abortWarnTimer = undefined;
+            }
+            unsubscribe();
+            if (ACTIVE_EMBEDDED_RUNS.get(params.sessionId) === queueHandle) {
+              ACTIVE_EMBEDDED_RUNS.delete(params.sessionId);
+              notifyEmbeddedRunEnded(params.sessionId);
+            }
+            session.dispose();
+            params.abortSignal?.removeEventListener?.("abort", onAbort);
+          }
+          if (promptError && !aborted) {
+            const fallbackThinking = pickFallbackThinkingLevel({
+              message: describeUnknownError(promptError),
+              attempted: attemptedThinking,
+            });
+            if (fallbackThinking) {
+              log.warn(
+                `unsupported thinking level for ${provider}/${modelId}; retrying with ${fallbackThinking}`,
+              );
+              thinkLevel = fallbackThinking;
+              continue;
+            }
+            throw promptError;
+          }
+
+          const lastAssistant = messagesSnapshot
+            .slice()
+            .reverse()
+            .find((m) => (m as AgentMessage)?.role === "assistant") as
+            | AssistantMessage
+            | undefined;
+
+          const fallbackThinking = pickFallbackThinkingLevel({
+            message: lastAssistant?.errorMessage,
+            attempted: attemptedThinking,
+          });
+          if (fallbackThinking && !aborted) {
+            log.warn(
+              `unsupported thinking level for ${provider}/${modelId}; retrying with ${fallbackThinking}`,
+            );
+            thinkLevel = fallbackThinking;
+            continue;
+          }
+
+          const fallbackConfigured =
+            (params.config?.agent?.modelFallbacks?.length ?? 0) > 0;
+          if (fallbackConfigured && isRateLimitAssistantError(lastAssistant)) {
+            const message =
+              lastAssistant?.errorMessage?.trim() ||
+              (lastAssistant ? formatAssistantErrorText(lastAssistant) : "") ||
+              "LLM request rate limited.";
+            throw new Error(message);
+          }
+
+          const usage = lastAssistant?.usage;
+          const agentMeta: EmbeddedPiAgentMeta = {
+            sessionId: sessionIdUsed,
+            provider: lastAssistant?.provider ?? provider,
+            model: lastAssistant?.model ?? model.id,
+            usage: usage
+              ? {
+                  input: usage.input,
+                  output: usage.output,
+                  cacheRead: usage.cacheRead,
+                  cacheWrite: usage.cacheWrite,
+                  total: usage.totalTokens,
+                }
+              : undefined,
+          };
+
+          const replyItems: Array<{ text: string; media?: string[] }> = [];
+
+          const errorText = lastAssistant
+            ? formatAssistantErrorText(lastAssistant)
+            : undefined;
+          if (errorText) replyItems.push({ text: errorText });
+
+          const inlineToolResults =
+            params.verboseLevel === "on" &&
+            !params.onPartialReply &&
+            !params.onToolResult &&
+            toolMetas.length > 0;
+          if (inlineToolResults) {
+            for (const { toolName, meta } of toolMetas) {
+              const agg = formatToolAggregate(toolName, meta ? [meta] : []);
+              const { text: cleanedText, mediaUrls } =
+                splitMediaFromOutput(agg);
+              if (cleanedText)
+                replyItems.push({ text: cleanedText, media: mediaUrls });
+            }
+          }
+
+          for (const text of assistantTexts.length
+            ? assistantTexts
+            : lastAssistant
+              ? [extractAssistantText(lastAssistant)]
+              : []) {
+            const { text: cleanedText, mediaUrls } = splitMediaFromOutput(text);
+            if (!cleanedText && (!mediaUrls || mediaUrls.length === 0))
+              continue;
+            replyItems.push({ text: cleanedText, media: mediaUrls });
+          }
+
+          const payloads = replyItems
+            .map((item) => ({
+              text: item.text?.trim() ? item.text.trim() : undefined,
+              mediaUrls: item.media?.length ? item.media : undefined,
+              mediaUrl: item.media?.[0],
+            }))
+            .filter(
+              (p) =>
+                p.text || p.mediaUrl || (p.mediaUrls && p.mediaUrls.length > 0),
+            );
+
+          log.debug(
+            `embedded run done: runId=${params.runId} sessionId=${params.sessionId} durationMs=${Date.now() - started} aborted=${aborted}`,
+          );
+          return {
+            payloads: payloads.length ? payloads : undefined,
+            meta: {
+              durationMs: Date.now() - started,
+              agentMeta,
+              aborted,
+            },
+          };
+        } finally {
+          restoreSkillEnv?.();
+          process.chdir(prevCwd);
+        }
       }
     }),
   );

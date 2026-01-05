@@ -97,7 +97,7 @@ export function resolveSessionTranscriptCandidates(
     candidates.push(path.join(dir, `${sessionId}.jsonl`));
   }
   candidates.push(
-    path.join(os.homedir(), ".clawdbot", "sessions", `${sessionId}.jsonl`),
+    path.join(os.homedir(), ".clawdis", "sessions", `${sessionId}.jsonl`),
   );
   return candidates;
 }

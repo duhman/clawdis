@@ -122,7 +122,7 @@ export function registerDnsCli(program: Command) {
         `Detected tailnet IP: ${tailnetIPv4 ?? "—"}${tailnetIPv6 ? ` (v6 ${tailnetIPv6})` : ""}`,
       );
       console.log("");
-      console.log("Recommended ~/.clawdbot/clawdbot.json:");
+      console.log("Recommended ~/.clawdis/clawdis.json:");
       console.log(
         JSON.stringify(
           {
@@ -224,7 +224,7 @@ export function registerDnsCli(program: Command) {
       if (cfg.discovery?.wideArea?.enabled !== true) {
         console.log("");
         console.log(
-          "Note: enable discovery.wideArea.enabled in ~/.clawdbot/clawdbot.json on the gateway and restart the gateway so it writes the DNS-SD zone.",
+          "Note: enable discovery.wideArea.enabled in ~/.clawdis/clawdis.json on the gateway and restart the gateway so it writes the DNS-SD zone.",
         );
       }
     });

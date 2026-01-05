@@ -106,7 +106,7 @@ export type SandboxWorkspaceInfo = {
 
 const DEFAULT_SANDBOX_WORKSPACE_ROOT = path.join(
   os.homedir(),
-  ".clawdbot",
+  ".clawdis",
   "sandboxes",
 );
 export const DEFAULT_SANDBOX_IMAGE = "clawdbot-sandbox:bookworm-slim";

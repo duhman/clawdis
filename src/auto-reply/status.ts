@@ -82,7 +82,7 @@ const readUsageFromSessionLog = (
       model?: string;
     }
   | undefined => {
-  // Transcripts always live at: ~/.clawdbot/sessions/<SessionId>.jsonl
+  // Transcripts always live at: ~/.clawdis/sessions/<SessionId>.jsonl
   if (!sessionId) return undefined;
   const logPath = resolveSessionTranscriptPath(sessionId);
   if (!fs.existsSync(logPath)) return undefined;

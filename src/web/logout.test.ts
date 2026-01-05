@@ -25,7 +25,7 @@ describe("web logout", () => {
         await vi.importActual<typeof import("../utils.js")>("../utils.js");
       return {
         ...actual,
-        CONFIG_DIR: path.join(tmpDir, ".clawdbot"),
+        CONFIG_DIR: path.join(tmpDir, ".clawdis"),
       };
     });
   });
@@ -45,12 +45,12 @@ describe("web logout", () => {
     "deletes cached credentials when present",
     { timeout: 15_000 },
     async () => {
-      const credsDir = path.join(tmpDir, ".clawdbot", "credentials");
+      const credsDir = path.join(tmpDir, ".clawdis", "credentials");
       fs.mkdirSync(credsDir, { recursive: true });
       fs.writeFileSync(path.join(credsDir, "creds.json"), "{}");
       const sessionsPath = path.join(
         tmpDir,
-        ".clawdbot",
+        ".clawdis",
         "sessions",
         "sessions.json",
       );

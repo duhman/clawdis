@@ -20,7 +20,7 @@ function resolveTaskScriptPath(
   env: Record<string, string | undefined>,
 ): string {
   const home = resolveHomeDir(env);
-  return path.join(home, ".clawdbot", "gateway.cmd");
+  return path.join(home, ".clawdis", "gateway.cmd");
 }
 
 function resolveLegacyTaskScriptPath(

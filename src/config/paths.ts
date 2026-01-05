@@ -20,17 +20,17 @@ export const isNixMode = resolveIsNixMode();
 
 /**
  * State directory for mutable data (sessions, logs, caches).
- * Can be overridden via CLAWDBOT_STATE_DIR environment variable.
- * Default: ~/.clawdbot
+ * Can be overridden via CLAWDIS_STATE_DIR or CLAWDBOT_STATE_DIR environment variable.
+ * Default: ~/.clawdis
  */
 export function resolveStateDir(
   env: NodeJS.ProcessEnv = process.env,
   homedir: () => string = os.homedir,
 ): string {
   const override =
-    env.CLAWDBOT_STATE_DIR?.trim() || env.CLAWDIS_STATE_DIR?.trim();
+    env.CLAWDIS_STATE_DIR?.trim() || env.CLAWDBOT_STATE_DIR?.trim();
   if (override) return resolveUserPath(override);
-  return path.join(homedir(), ".clawdbot");
+  return path.join(homedir(), ".clawdis");
 }
 
 export const STATE_DIR_CLAWDBOT = resolveStateDir();
@@ -46,7 +46,7 @@ export function resolveConfigPath(
 ): string {
   const override = env.CLAWDBOT_CONFIG_PATH?.trim();
   if (override) return override;
-  return path.join(stateDir, "clawdbot.json");
+  return path.join(stateDir, "clawdis.json");
 }
 
 export const CONFIG_PATH_CLAWDBOT = resolveConfigPath();

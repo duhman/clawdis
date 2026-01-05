@@ -119,7 +119,7 @@ After the user chooses, update:
 - Timezone (optional)
 - Notes
 
-3) ~/.clawdbot/clawdbot.json
+3) ~/.clawdis/clawdis.json
 Set identity.name, identity.theme, identity.emoji to match IDENTITY.md.
 
 ## Cleanup

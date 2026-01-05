@@ -161,7 +161,7 @@ vi.mock("../config/config.js", async () => {
     "../config/config.js",
   );
   const resolveConfigPath = () =>
-    path.join(os.homedir(), ".clawdbot", "clawdbot.json");
+    path.join(os.homedir(), ".clawdis", "clawdis.json");
 
   const readConfigFileSnapshot = async () => {
     if (testState.legacyIssues.length > 0) {

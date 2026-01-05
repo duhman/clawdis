@@ -73,9 +73,9 @@ describe("applyCliProfileEnv", () => {
       homedir: () => "/home/peter",
     });
     expect(env.CLAWDBOT_PROFILE).toBe("dev");
-    expect(env.CLAWDBOT_STATE_DIR).toBe("/home/peter/.clawdbot-dev");
+    expect(env.CLAWDBOT_STATE_DIR).toBe("/home/peter/.clawdis-dev");
     expect(env.CLAWDBOT_CONFIG_PATH).toBe(
-      path.join("/home/peter/.clawdbot-dev", "clawdbot.json"),
+      path.join("/home/peter/.clawdis-dev", "clawdis.json"),
     );
     expect(env.CLAWDBOT_GATEWAY_PORT).toBe("19001");
   });
@@ -92,8 +92,6 @@ describe("applyCliProfileEnv", () => {
     });
     expect(env.CLAWDBOT_STATE_DIR).toBe("/custom");
     expect(env.CLAWDBOT_GATEWAY_PORT).toBe("19099");
-    expect(env.CLAWDBOT_CONFIG_PATH).toBe(
-      path.join("/custom", "clawdbot.json"),
-    );
+    expect(env.CLAWDBOT_CONFIG_PATH).toBe(path.join("/custom", "clawdis.json"));
   });
 });

@@ -77,7 +77,7 @@ function resolveProfileStateDir(
   homedir: () => string,
 ): string {
   const suffix = profile.toLowerCase() === "default" ? "" : `-${profile}`;
-  return path.join(homedir(), `.clawdbot${suffix}`);
+  return path.join(homedir(), `.clawdis${suffix}`);
 }
 
 export function applyCliProfileEnv(params: {
@@ -98,7 +98,7 @@ export function applyCliProfileEnv(params: {
   if (!env.CLAWDBOT_STATE_DIR?.trim()) env.CLAWDBOT_STATE_DIR = stateDir;
 
   if (!env.CLAWDBOT_CONFIG_PATH?.trim()) {
-    env.CLAWDBOT_CONFIG_PATH = path.join(stateDir, "clawdbot.json");
+    env.CLAWDBOT_CONFIG_PATH = path.join(stateDir, "clawdis.json");
   }
 
   if (profile === "dev" && !env.CLAWDBOT_GATEWAY_PORT?.trim()) {

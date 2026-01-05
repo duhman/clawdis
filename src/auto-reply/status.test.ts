@@ -82,20 +82,14 @@ describe("buildStatusMessage", () => {
     process.env.HOME = dir;
     try {
       vi.resetModules();
-      const { buildStatusMessage: buildStatusMessageDynamic } = await import(
-        "./status.js"
-      );
+      const { buildStatusMessage: buildStatusMessageDynamic } =
+        await import("./status.js");
 
-      const storePath = path.join(
-        dir,
-        ".clawdbot",
-        "sessions",
-        "sessions.json",
-      );
+      const storePath = path.join(dir, ".clawdis", "sessions", "sessions.json");
       const sessionId = "sess-1";
       const logPath = path.join(
         dir,
-        ".clawdbot",
+        ".clawdis",
         "sessions",
         `${sessionId}.jsonl`,
       );

@@ -635,6 +635,60 @@ export type ModelsConfig = {
   providers?: Record<string, ModelProviderConfig>;
 };
 
+// ─── MCP Server Configuration ─────────────────────────────────────────────────
+
+export type McpServerConfig = {
+  /** Command to spawn the MCP server (e.g., "npx", "uvx", "node"). */
+  command: string;
+  /** Arguments to pass to the command. */
+  args?: string[];
+  /** Environment variables for the MCP server process. */
+  env?: Record<string, string>;
+  /** If false, skip this server. Default: true. */
+  enabled?: boolean;
+  /** Timeout for server initialization (ms). Default: 30000. */
+  initTimeoutMs?: number;
+  /** Timeout for tool calls (ms). Default: 60000. */
+  callTimeoutMs?: number;
+};
+
+export type McpConfig = {
+  /** If false, disable all MCP servers. Default: true. */
+  enabled?: boolean;
+  /** MCP server definitions keyed by server name. */
+  servers?: Record<string, McpServerConfig>;
+};
+
+// ─── Agent Lifecycle Hooks Configuration ──────────────────────────────────────
+
+export type AgentHookType = "command" | "skill";
+
+export type AgentHookDefinition = {
+  /** Pattern to match tool names (glob-style). If omitted, matches all. */
+  matcher?: string;
+  /** Hook type: shell command or skill invocation. */
+  type: AgentHookType;
+  /** Shell command to execute (for type: "command"). */
+  command?: string;
+  /** Skill name to invoke (for type: "skill"). */
+  skill?: string;
+  /** Timeout in milliseconds. Default: 5000. */
+  timeoutMs?: number;
+};
+
+export type AgentHooksConfig = {
+  /** If false, disable all agent hooks. Default: true. */
+  enabled?: boolean;
+  /** Hooks to run before tool execution. Can block the tool if exit code is non-zero. */
+  PreToolUse?: AgentHookDefinition[];
+  /** Hooks to run after tool execution. */
+  PostToolUse?: AgentHookDefinition[];
+  /** Hooks to run after each agent turn completes. */
+  PostAgentTurn?: AgentHookDefinition[];
+  /** Hooks to run when a session ends. */
+  SessionEnd?: AgentHookDefinition[];
+};
+
 export type ClawdbotConfig = {
   env?: {
     /** Opt-in: import missing secrets from a login shell environment (exec `$SHELL -l -c 'env -0'`). */
@@ -664,6 +718,8 @@ export type ClawdbotConfig = {
   };
   skills?: SkillsConfig;
   models?: ModelsConfig;
+  mcp?: McpConfig;
+  agentHooks?: AgentHooksConfig;
   agent?: {
     /** Model id (provider/model), e.g. "anthropic/claude-opus-4-5". */
     model?: string;

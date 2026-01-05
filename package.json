@@ -1,11 +1,11 @@
 {
-  "name": "clawdbot",
+  "name": "clawdis",
   "version": "2026.1.5-3",
   "description": "WhatsApp gateway CLI (Baileys web) with Pi RPC agent",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "clawdbot": "dist/entry.js"
+    "clawdis": "dist/entry.js"
   },
   "files": [
     "dist/agents/**",
@@ -54,9 +54,9 @@
     "ui:dev": "pnpm -C ui dev",
     "ui:build": "pnpm -C ui build",
     "start": "tsx src/entry.ts",
-    "clawdbot": "tsx src/entry.ts",
+    "clawdis": "tsx src/entry.ts",
     "gateway:watch": "tsx watch --clear-screen=false --include 'src/**/*.ts' src/entry.ts gateway --force",
-    "clawdbot:rpc": "tsx src/entry.ts agent --mode rpc --json",
+    "clawdis:rpc": "tsx src/entry.ts agent --mode rpc --json",
     "lint": "biome check src test && oxlint --type-aware src test --ignore-pattern src/canvas-host/a2ui/a2ui.bundle.js",
     "lint:swift": "swiftlint lint --config .swiftlint.yml && (cd apps/ios && swiftlint lint --config .swiftlint.yml)",
     "lint:fix": "biome check --write --unsafe src && biome format --write src",

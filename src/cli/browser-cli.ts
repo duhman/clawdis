@@ -18,7 +18,7 @@ export function registerBrowserCli(program: Command) {
     .description("Manage clawd's dedicated browser (Chrome/Chromium)")
     .option(
       "--url <url>",
-      "Override browser control URL (default from ~/.clawdbot/clawdbot.json)",
+      "Override browser control URL (default from ~/.clawdis/clawdis.json)",
     )
     .option("--profile <name>", "Browser profile name (default from config)")
     .option("--json", "Output machine-readable JSON", false)

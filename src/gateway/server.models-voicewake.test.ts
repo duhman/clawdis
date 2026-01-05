@@ -62,7 +62,7 @@ describe("gateway server models + voicewake", () => {
 
       const onDisk = JSON.parse(
         await fs.readFile(
-          path.join(homeDir, ".clawdbot", "settings", "voicewake.json"),
+          path.join(homeDir, ".clawdis", "settings", "voicewake.json"),
           "utf8",
         ),
       ) as { triggers?: unknown; updatedAtMs?: unknown };
