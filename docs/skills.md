@@ -4,7 +4,9 @@ read_when:
   - Adding or modifying skills
   - Changing skill gating or load rules
 ---
+
 <!-- {% raw %} -->
+
 # Skills (Clawdis)
 
 Clawdis uses **AgentSkills-compatible** skill folders to teach the agent how to use tools. Each skill is a directory containing a `SKILL.md` with YAML frontmatter and instructions. Clawdis loads **bundled skills** plus optional local overrides, and filters them at load time based on environment, config, and binary presence.
@@ -13,9 +15,9 @@ Clawdis uses **AgentSkills-compatible** skill folders to teach the agent how to 
 
 Skills are loaded from **three** places:
 
-1) **Bundled skills**: shipped with the install (npm package or Clawdis.app)
-2) **Managed/local skills**: `~/.clawdis/skills`
-3) **Workspace skills**: `<workspace>/skills`
+1. **Bundled skills**: shipped with the install (npm package or Clawdis.app)
+2. **Managed/local skills**: `~/.clawdis/skills`
+3. **Workspace skills**: `<workspace>/skills`
 
 If a skill name conflicts, precedence is:
 
@@ -36,6 +38,7 @@ description: Generate or edit images via Gemini 3 Pro Image
 ```
 
 Notes:
+
 - We follow the AgentSkills spec for layout/intent.
 - The parser used by the embedded agent supports **single-line** frontmatter keys only.
 - `metadata` should be a **single-line JSON object**.
@@ -51,11 +54,24 @@ Clawdis **filters skills at load time** using `metadata` (single-line JSON):
 ---
 name: nano-banana-pro
 description: Generate or edit images via Gemini 3 Pro Image
-metadata: {"clawdis":{"requires":{"bins":["uv"],"env":["GEMINI_API_KEY"],"config":["browser.enabled"]},"primaryEnv":"GEMINI_API_KEY"}}
+metadata:
+  {
+    "clawdis":
+      {
+        "requires":
+          {
+            "bins": ["uv"],
+            "env": ["GEMINI_API_KEY"],
+            "config": ["browser.enabled"],
+          },
+        "primaryEnv": "GEMINI_API_KEY",
+      },
+  }
 ---
 ```
 
 Fields under `metadata.clawdis`:
+
 - `always: true` — always include the skill (skip other gates).
 - `emoji` — optional emoji used by the macOS Skills UI.
 - `homepage` — optional URL shown as “Website” in the macOS Skills UI.
@@ -72,11 +88,29 @@ Installer example:
 ---
 name: gemini
 description: Use Gemini CLI for coding assistance and Google search lookups.
-metadata: {"clawdis":{"emoji":"♊️","requires":{"bins":["gemini"]},"install":[{"id":"brew","kind":"brew","formula":"gemini-cli","bins":["gemini"],"label":"Install Gemini CLI (brew)"}]}}
+metadata:
+  {
+    "clawdis":
+      {
+        "emoji": "♊️",
+        "requires": { "bins": ["gemini"] },
+        "install":
+          [
+            {
+              "id": "brew",
+              "kind": "brew",
+              "formula": "gemini-cli",
+              "bins": ["gemini"],
+              "label": "Install Gemini CLI (brew)",
+            },
+          ],
+      },
+  }
 ---
 ```
 
 Notes:
+
 - If multiple installers are listed, the gateway picks a **single** preferred option (brew when available, otherwise node).
 - Node installs honor `skills.install.nodeManager` in `clawdis.json` (default: npm; options: npm/pnpm/yarn/bun).
 - Go installs: if `go` is missing and `brew` is available, the gateway installs Go via Homebrew first and sets `GOBIN` to Homebrew’s `bin` when possible.
@@ -96,13 +130,13 @@ Bundled/managed skills can be toggled and supplied with env values:
         enabled: true,
         apiKey: "GEMINI_KEY_HERE",
         env: {
-          GEMINI_API_KEY: "GEMINI_KEY_HERE"
-        }
+          GEMINI_API_KEY: "GEMINI_KEY_HERE",
+        },
       },
       peekaboo: { enabled: true },
-      sag: { enabled: false }
-    }
-  }
+      sag: { enabled: false },
+    },
+  },
 }
 ```
 
@@ -112,6 +146,7 @@ Config keys match the **skill name** by default. If a skill defines
 `metadata.clawdis.skillKey`, use that key under `skills.entries`.
 
 Rules:
+
 - `enabled: false` disables the skill even if it’s bundled/installed.
 - `env`: injected **only if** the variable isn’t already set in the process.
 - `apiKey`: convenience for skills that declare `metadata.clawdis.primaryEnv`.
@@ -121,11 +156,12 @@ Rules:
 ## Environment injection (per agent run)
 
 When an agent run starts, Clawdis:
-1) Reads skill metadata.
-2) Applies any `skills.entries.<key>.env` or `skills.entries.<key>.apiKey` to
+
+1. Reads skill metadata.
+2. Applies any `skills.entries.<key>.env` or `skills.entries.<key>.apiKey` to
    `process.env`.
-3) Builds the system prompt with **eligible** skills.
-4) Restores the original environment after the run ends.
+3. Builds the system prompt with **eligible** skills.
+4. Restores the original environment after the run ends.
 
 This is **scoped to the agent run**, not a global shell environment.
 
@@ -140,9 +176,58 @@ install (npm package or Clawdis.app). `~/.clawdis/skills` exists for local
 overrides (for example, pinning/patching a skill without changing the bundled
 copy). Workspace skills are user-owned and override both on name conflicts.
 
+## Claude Code skill compatibility
+
+Clawdis skills use the same **SKILL.md frontmatter format** as Claude Code skills. This enables sharing skills between both platforms.
+
+### Sharing Claude Code skills with Clawdis
+
+Option 1: **Symlink individual skills**
+
+```bash
+# Link a specific Claude Code skill to Clawdis
+ln -sf ~/.claude/skills/diary ~/.clawdis/skills/diary
+ln -sf ~/.claude/skills/handoff-creator ~/.clawdis/skills/handoff-creator
+```
+
+Option 2: **Add Claude Code skills directory via config**
+
+```json5
+{
+  skills: {
+    load: {
+      extraDirs: ["~/.claude/skills"],
+    },
+  },
+}
+```
+
+Option 3: **Link to workspace skills**
+
+```bash
+# Link Claude Code skills to workspace
+ln -sf ~/.claude/skills ~/clawd/claude-skills
+```
+
+### Compatibility notes
+
+| Feature                 | Claude Code | Clawdis | Notes                          |
+| ----------------------- | ----------- | ------- | ------------------------------ |
+| `SKILL.md` frontmatter  | ✓           | ✓       | Same format                    |
+| `name`, `description`   | ✓           | ✓       | Required fields                |
+| `metadata` JSON         | ✓           | ✓       | Single-line only in Clawdis    |
+| `requires.env`          | ✓           | ✓       | Same env gating                |
+| `requires.bins`         | —           | ✓       | Clawdis-specific binary checks |
+| `requires.config`       | —           | ✓       | Clawdis-specific config checks |
+| `{baseDir}` placeholder | ✓           | ✓       | Same behavior                  |
+| Scripts in skill folder | ✓           | ✓       | Same relative paths            |
+
+Skills with Clawdis-specific gating (`requires.bins`, `requires.config`) will still work in Claude Code but won't be filtered there. Skills that only use `requires.env` are fully portable.
+
 ## Config reference
 
 See `docs/skills-config.md` for the full configuration schema.
 
 ---
+
 <!-- {% endraw %} -->

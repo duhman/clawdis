@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
@@ -44,6 +46,7 @@ import { loadConfig } from "../config/config.js";
 import { reactMessageDiscord } from "../discord/send.js";
 import { callGateway } from "../gateway/call.js";
 import { detectMime } from "../media/mime.js";
+import { getAgentConfig, listAgentTypes } from "./agent-configs.js";
 import { sanitizeToolResultImages } from "./tool-images.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: TypeBox schema type from pi-ai uses a different module instance.
@@ -1507,6 +1510,136 @@ function createGatewayTool(): AnyAgentTool {
   };
 }
 
+const SpawnAgentToolSchema = Type.Object({
+  agentType: Type.String({
+    description:
+      "Type of agent to spawn: explore, plan, code-review, research, test",
+  }),
+  task: Type.String({
+    description: "The task or question for the subagent to work on",
+  }),
+  contextFiles: Type.Optional(
+    Type.Array(Type.String(), {
+      description: "File paths to include as context for the subagent",
+    }),
+  ),
+  workspaceDir: Type.Optional(
+    Type.String({
+      description: "Working directory for the subagent. Defaults to ~/clawd/",
+    }),
+  ),
+  timeoutMs: Type.Optional(
+    Type.Number({
+      description: "Timeout in milliseconds. Default: 120000 (2 min)",
+    }),
+  ),
+});
+
+function createSpawnAgentTool(): AnyAgentTool {
+  return {
+    label: "Spawn Agent",
+    name: "spawn_agent",
+    description: `Spawn a specialized subagent for isolated tasks. Available types: ${listAgentTypes().join(", ")}. Use for exploration, planning, code review, research, and testing. Subagents run in isolated contexts and return summaries.`,
+    parameters: SpawnAgentToolSchema,
+    execute: async (_toolCallId, args) => {
+      const params = args as Record<string, unknown>;
+
+      const agentType = readStringParam(params, "agentType", {
+        required: true,
+      });
+      const task = readStringParam(params, "task", { required: true });
+
+      const config = getAgentConfig(agentType);
+      if (!config) {
+        const available = listAgentTypes().join(", ");
+        throw new Error(
+          `Unknown agent type: ${agentType}. Available: ${available}`,
+        );
+      }
+
+      // Build context from files if provided
+      const contextFiles = Array.isArray(params.contextFiles)
+        ? params.contextFiles.map((p) => String(p))
+        : [];
+
+      let contextContent = "";
+      for (const filePath of contextFiles) {
+        try {
+          const content = await fs.readFile(filePath, "utf8");
+          contextContent += `\n\n--- File: ${filePath} ---\n${content}`;
+        } catch {
+          contextContent += `\n\n--- File: ${filePath} ---\n[Could not read file]`;
+        }
+      }
+
+      const fullPrompt = contextContent
+        ? `${task}\n\n## Context Files${contextContent}`
+        : task;
+
+      // Resolve workspace directory
+      const workspaceDir =
+        typeof params.workspaceDir === "string" && params.workspaceDir.trim()
+          ? params.workspaceDir.trim()
+          : path.join(os.homedir(), "clawd");
+
+      const timeoutMs =
+        typeof params.timeoutMs === "number" &&
+        Number.isFinite(params.timeoutMs)
+          ? params.timeoutMs
+          : 120_000;
+
+      // Dynamic import to avoid circular dependency
+      const { runEmbeddedPiAgent } = await import("./pi-embedded-runner.js");
+
+      const sessionId = `subagent-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+      const sessionFile = path.join(
+        os.tmpdir(),
+        `clawdis-subagent-${sessionId}.jsonl`,
+      );
+
+      try {
+        const result = await runEmbeddedPiAgent({
+          sessionId,
+          sessionFile,
+          workspaceDir,
+          prompt: fullPrompt,
+          timeoutMs,
+          runId: sessionId,
+          extraSystemPrompt: config.systemAppend,
+          thinkLevel: config.thinkLevel,
+        });
+
+        // Extract the final text output
+        const outputs = result.payloads
+          ?.map((p) => p.text)
+          .filter(Boolean)
+          .join("\n\n");
+
+        return jsonResult({
+          agentType,
+          success: !result.meta.aborted,
+          output: outputs || "(No output from subagent)",
+          durationMs: result.meta.durationMs,
+          aborted: result.meta.aborted,
+        });
+      } catch (err) {
+        return jsonResult({
+          agentType,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        // Clean up temp session file
+        try {
+          await fs.unlink(sessionFile);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+    },
+  };
+}
+
 export function createClawdisTools(): AnyAgentTool[] {
   return [
     createBrowserTool(),
@@ -1515,5 +1648,6 @@ export function createClawdisTools(): AnyAgentTool[] {
     createCronTool(),
     createDiscordTool(),
     createGatewayTool(),
+    createSpawnAgentTool(),
   ];
 }

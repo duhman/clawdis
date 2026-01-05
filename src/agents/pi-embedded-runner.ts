@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { AppMessage, ThinkingLevel } from "@mariozechner/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@mariozechner/pi-ai";
 import {
   type Api,
   type AssistantMessage,
@@ -25,6 +26,7 @@ import {
 import type { ThinkLevel, VerboseLevel } from "../auto-reply/thinking.js";
 import { formatToolAggregate } from "../auto-reply/tool-meta.js";
 import type { ClawdisConfig } from "../config/config.js";
+import { createHookRunner, type HookRunner } from "../infra/hooks/runner.js";
 import { getMachineDisplayName } from "../infra/machine-name.js";
 import { splitMediaFromOutput } from "../media/parse.js";
 import {
@@ -34,6 +36,7 @@ import {
 import { CONFIG_DIR, resolveUserPath } from "../utils.js";
 import { resolveClawdisAgentDir } from "./agent-paths.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
+import { createMcpTools } from "./mcp-tools.js";
 import { ensureClawdisModelsJson } from "./models-config.js";
 import {
   buildBootstrapContextFiles,
@@ -306,6 +309,63 @@ function resolvePromptSkills(
     .filter((skill): skill is Skill => Boolean(skill));
 }
 
+// biome-ignore lint/suspicious/noExplicitAny: AgentTool type flexibility
+type AnyAgentTool = AgentTool<any, unknown>;
+
+/**
+ * Wrap tools with hook execution (PreToolUse, PostToolUse).
+ */
+function wrapToolsWithHooks(
+  tools: AnyAgentTool[],
+  hookRunner: HookRunner | null,
+  sessionKey?: string,
+): AnyAgentTool[] {
+  if (!hookRunner || !hookRunner.isEnabled) {
+    return tools;
+  }
+
+  return tools.map((tool) => ({
+    ...tool,
+    execute: async (
+      toolCallId: string,
+      args: unknown,
+    ): Promise<AgentToolResult<unknown>> => {
+      const toolArgs = (args ?? {}) as Record<string, unknown>;
+
+      // PreToolUse: check if tool should be blocked
+      const preCheck = await hookRunner.checkPreToolUse(
+        tool.name,
+        toolArgs,
+        sessionKey,
+      );
+
+      if (!preCheck.allowed) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `[Hook blocked] ${preCheck.blockReason ?? "Tool execution blocked by hook"}`,
+            },
+          ],
+          details: { blocked: true, reason: preCheck.blockReason },
+        };
+      }
+
+      // Execute the original tool
+      const result = await tool.execute(toolCallId, args);
+
+      // PostToolUse: notify hooks (non-blocking)
+      hookRunner
+        .runPostToolUse(tool.name, toolArgs, result, sessionKey)
+        .catch((err) => {
+          console.error(`[Hooks] PostToolUse error for ${tool.name}:`, err);
+        });
+
+      return result;
+    },
+  }));
+}
+
 export async function runEmbeddedPiAgent(params: {
   sessionId: string;
   sessionKey?: string;
@@ -406,9 +466,26 @@ export async function runEmbeddedPiAgent(params: {
           await loadWorkspaceBootstrapFiles(resolvedWorkspace);
         const contextFiles = buildBootstrapContextFiles(bootstrapFiles);
         const promptSkills = resolvePromptSkills(skillsSnapshot, skillEntries);
-        const tools = createClawdisCodingTools({
+
+        // Initialize MCP tools if configured
+        const mcpTools = params.config?.mcp
+          ? await createMcpTools(params.config.mcp)
+          : [];
+
+        const codingTools = createClawdisCodingTools({
           bash: params.config?.agent?.bash,
         });
+
+        // Initialize hook runner if configured
+        const hookRunner = createHookRunner(params.config?.agentHooks);
+
+        // Merge coding tools with MCP tools, then wrap with hooks
+        const baseTools = [...codingTools, ...mcpTools];
+        const tools = wrapToolsWithHooks(
+          baseTools,
+          hookRunner,
+          params.sessionKey,
+        );
         const machineName = await getMachineDisplayName();
         const runtimeInfo = {
           host: machineName,
@@ -522,6 +599,14 @@ export async function runEmbeddedPiAgent(params: {
           } catch (err) {
             promptError = err;
           }
+
+          // Run PostAgentTurn hooks (non-blocking)
+          if (hookRunner?.isEnabled) {
+            hookRunner.runPostAgentTurn(params.sessionKey).catch((err) => {
+              console.error("[Hooks] PostAgentTurn error:", err);
+            });
+          }
+
           await waitForCompactionRetry();
           messagesSnapshot = session.messages.slice();
           sessionIdUsed = session.sessionId;
