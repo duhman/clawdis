@@ -196,9 +196,14 @@ enum CommandResolver {
         subcommand: String,
         extraArgs: [String] = [],
         defaults: UserDefaults = .standard,
-        searchPaths: [String]? = nil) -> [String]
+        searchPaths: [String]? = nil,
+        configRoot: [String: Any]? = nil,
+        configFileExists: Bool? = nil) -> [String]
     {
-        let settings = self.connectionSettings(defaults: defaults)
+        let settings = self.connectionSettings(
+            defaults: defaults,
+            configRoot: configRoot,
+            configFileExists: configFileExists)
         if settings.mode == .remote, let ssh = self.sshNodeCommand(
             subcommand: subcommand,
             extraArgs: extraArgs,
@@ -246,13 +251,17 @@ enum CommandResolver {
         subcommand: String,
         extraArgs: [String] = [],
         defaults: UserDefaults = .standard,
-        searchPaths: [String]? = nil) -> [String]
+        searchPaths: [String]? = nil,
+        configRoot: [String: Any]? = nil,
+        configFileExists: Bool? = nil) -> [String]
     {
         self.clawdbotNodeCommand(
             subcommand: subcommand,
             extraArgs: extraArgs,
             defaults: defaults,
-            searchPaths: searchPaths)
+            searchPaths: searchPaths,
+            configRoot: configRoot,
+            configFileExists: configFileExists)
     }
 
     // MARK: - SSH helpers
@@ -366,15 +375,15 @@ enum CommandResolver {
         let cliPath: String
     }
 
-    static func connectionSettings(defaults: UserDefaults = .standard) -> RemoteSettings {
-        let modeRaw = defaults.string(forKey: connectionModeKey)
-        let mode: AppState.ConnectionMode
-        if let modeRaw {
-            mode = AppState.ConnectionMode(rawValue: modeRaw) ?? .local
-        } else {
-            let seen = defaults.bool(forKey: "clawdbot.onboardingSeen")
-            mode = seen ? .local : .unconfigured
-        }
+    static func connectionSettings(
+        defaults: UserDefaults = .standard,
+        configRoot: [String: Any]? = nil,
+        configFileExists: Bool? = nil
+    ) -> RemoteSettings {
+        let mode = ConnectionModeResolver.resolve(
+            defaults: defaults,
+            configRoot: configRoot,
+            configFileExists: configFileExists)
         let target = defaults.string(forKey: remoteTargetKey) ?? ""
         let identity = defaults.string(forKey: remoteIdentityKey) ?? ""
         let projectRoot = defaults.string(forKey: remoteProjectRootKey) ?? ""

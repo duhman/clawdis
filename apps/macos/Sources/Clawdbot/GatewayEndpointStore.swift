@@ -91,18 +91,15 @@ actor GatewayEndpointStore {
 
     init(deps: Deps = .live) {
         self.deps = deps
-        let modeRaw = UserDefaults.standard.string(forKey: connectionModeKey)
-        let initialMode: AppState.ConnectionMode
-        if let modeRaw {
-            initialMode = AppState.ConnectionMode(rawValue: modeRaw) ?? .local
-        } else {
-            let seen = UserDefaults.standard.bool(forKey: "clawdbot.onboardingSeen")
-            initialMode = seen ? .local : .unconfigured
-        }
+        let configRoot = ClawdbotConfigFile.loadDict()
+        let initialMode = ConnectionModeResolver.resolve(
+            defaults: UserDefaults.standard,
+            configRoot: configRoot,
+            configFileExists: ClawdbotConfigFile.exists())
 
         let port = deps.localPort()
         let bind = GatewayEndpointStore.resolveGatewayBindMode(
-            root: ClawdbotConfigFile.loadDict(),
+            root: configRoot,
             env: ProcessInfo.processInfo.environment)
         let host = GatewayEndpointStore.resolveLocalGatewayHost(bindMode: bind, tailscaleIP: nil)
         let token = deps.token()

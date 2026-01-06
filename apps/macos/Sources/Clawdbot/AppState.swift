@@ -253,30 +253,11 @@ final class AppState {
 
         let configRoot = ClawdbotConfigFile.loadDict()
         let configGateway = configRoot["gateway"] as? [String: Any]
-        let configModeRaw = (configGateway?["mode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let configMode: ConnectionMode? = switch configModeRaw {
-        case "local":
-            .local
-        case "remote":
-            .remote
-        default:
-            nil
-        }
         let configRemoteUrl = (configGateway?["remote"] as? [String: Any])?["url"] as? String
-        let configHasRemoteUrl = !(configRemoteUrl?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty ?? true)
-
-        let storedMode = UserDefaults.standard.string(forKey: connectionModeKey)
-        let resolvedConnectionMode: ConnectionMode = if let configMode {
-            configMode
-        } else if configHasRemoteUrl {
-            .remote
-        } else if let storedMode {
-            ConnectionMode(rawValue: storedMode) ?? .local
-        } else {
-            onboardingSeen ? .local : .unconfigured
-        }
+        let resolvedConnectionMode = ConnectionModeResolver.resolve(
+            defaults: UserDefaults.standard,
+            configRoot: configRoot,
+            configFileExists: ClawdbotConfigFile.exists())
         self.connectionMode = resolvedConnectionMode
 
         let storedRemoteTarget = UserDefaults.standard.string(forKey: remoteTargetKey) ?? ""

@@ -7,6 +7,10 @@ enum ClawdbotConfigFile {
         ClawdbotPaths.configURL
     }
 
+    static func exists() -> Bool {
+        FileManager.default.fileExists(atPath: self.url().path)
+    }
+
     static func stateDirURL() -> URL {
         ClawdbotPaths.stateDirURL
     }
