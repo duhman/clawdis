@@ -153,6 +153,17 @@ Rules:
 - `allowBundled`: optional allowlist for **bundled** skills only. If set, only
   bundled skills in the list are eligible (managed/workspace skills unaffected).
 
+## Linux/VPS notes (systemd)
+
+On Linux, the gateway usually runs under `systemd`, so PATH/env must be set for
+the service process (not just your shell). If you install tools via:
+
+- **Linuxbrew** (`/home/linuxbrew/.linuxbrew`), add its `bin`/`sbin` to PATH.
+- **uv tool** (installs into `/home/clawdis/.local/bin`), add that to PATH.
+
+Put these in the environment file used by your service (for example
+`/home/clawdis/.clawdis/env`) and restart the gateway so the new PATH applies.
+
 ## Environment injection (per agent run)
 
 When an agent run starts, Clawdis:

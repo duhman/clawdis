@@ -576,6 +576,13 @@ Per-skill fields:
 - `env`: environment variables injected for the agent run (only if not already set).
 - `apiKey`: optional convenience for skills that declare a primary env var (e.g. `nano-banana-pro` → `GEMINI_API_KEY`).
 
+Linux/VPS note:
+
+- If the gateway runs under `systemd`, make sure the service environment includes
+  PATH entries for Linuxbrew and uv tools (for example,
+  `/home/linuxbrew/.linuxbrew/bin`, `/home/linuxbrew/.linuxbrew/sbin`,
+  `/home/clawdis/.local/bin`). Update the service env file and restart the gateway.
+
 Example:
 
 ```json5

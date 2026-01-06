@@ -226,6 +226,69 @@ Yes! The terminal QR code login works fine over SSH. For long-running operation:
 - Use `pm2`, `systemd`, or a `launchd` plist to keep the gateway running.
 - Consider Tailscale for secure remote access.
 
+#### VPS skills + CLI dependencies (Linux)
+
+If you host the gateway on a VPS, keep mac-only skills local and install Linux
+CLIs on the server. A common pattern:
+
+1. **Linuxbrew** (optional but convenient):
+   - Install under `/home/linuxbrew/.linuxbrew`.
+   - Add to the gateway env so systemd sees it:
+     ```
+     HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew
+     HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar
+     HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
+     PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:...
+     ```
+2. **uv tools** (for Python-based skills):
+   - `uv tool install <tool>` writes executables to `/home/clawdis/.local/bin`.
+   - Ensure `/home/clawdis/.local/bin` is on the gateway PATH.
+3. **npm / go** tools:
+   - Use `npm -g install <tool>` or `go install ...` as needed.
+4. **Disable mac-only skills** on the VPS:
+   ```json5
+   skills: {
+     entries: {
+       "apple-notes": { enabled: false },
+       "apple-reminders": { enabled: false },
+       "imsg": { enabled: false },
+       "things-mac": { enabled: false },
+       "bear-notes": { enabled: false },
+       "model-usage": { enabled: false },
+       "peekaboo": { enabled: false },
+     }
+   }
+   ```
+5. **Restart the gateway** after env/config changes (systemd/pm2), then check
+   `skills.status` or run `clawdbot doctor`.
+
+#### VPS auto-update (systemd timer)
+
+To keep the gateway current on a VPS, add a systemd timer that pulls and builds
+daily. Use a script that exits if there are local changes:
+
+```bash
+# /opt/clawdis/scripts/update-gateway.sh
+#!/usr/bin/env bash
+set -euo pipefail
+cd /opt/clawdis
+git fetch --all --prune
+if ! git diff --quiet || ! git diff --cached --quiet; then exit 0; fi
+if [[ "$(git rev-parse HEAD)" == "$(git rev-parse @{u})" ]]; then exit 0; fi
+git pull --ff-only
+pnpm install
+pnpm build
+systemctl restart clawdis-gateway
+```
+
+```bash
+# /etc/systemd/system/clawdis-update.timer
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+```
+
 ### bun binary vs Node runtime?
 
 Clawdbot can run as:
