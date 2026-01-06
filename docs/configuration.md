@@ -3,45 +3,140 @@ summary: "All configuration options for ~/.clawdis/clawdis.json with examples"
 read_when:
   - Adding or modifying config fields
 ---
-
-<!-- {% raw %} -->
-
 # Configuration 🔧
 
 CLAWDIS reads an optional **JSON5** config from `~/.clawdis/clawdis.json` (comments + trailing commas allowed).
 
 If the file is missing, CLAWDIS uses safe-ish defaults (embedded Pi agent + per-sender sessions + workspace `~/clawd`). You usually only need a config to:
-
 - restrict who can trigger the bot (`whatsapp.allowFrom`, `telegram.allowFrom`, etc.)
-- tune group mention behavior (`routing.groupChat`)
+- control group allowlists + mention behavior (`whatsapp.groups`, `telegram.groups`, `discord.guilds`, `routing.groupChat`)
 - customize message prefixes (`messages`)
-- set the agent’s workspace (`agent.workspace`)
+- set the agent's workspace (`agent.workspace`)
 - tune the embedded agent (`agent`) and session behavior (`session`)
-- set the agent’s identity (`identity`)
+- set the agent's identity (`identity`)
+
+## Schema + UI hints
+
+The Gateway exposes a JSON Schema representation of the config via `config.schema` for UI editors.
+The Control UI renders a form from this schema, with a **Raw JSON** editor as an escape hatch.
+
+Hints (labels, grouping, sensitive fields) ship alongside the schema so clients can render
+better forms without hard-coding config knowledge.
 
 ## Minimal config (recommended starting point)
 
 ```json5
 {
   agent: { workspace: "~/clawd" },
-  whatsapp: { allowFrom: ["+15555550123"] },
+  whatsapp: { allowFrom: ["+15555550123"] }
+}
+```
+
+Build the default image once with:
+```bash
+scripts/sandbox-setup.sh
+```
+
+## Self-chat mode (recommended for group control)
+
+To prevent the bot from responding to WhatsApp @-mentions in groups (only respond to specific text triggers):
+
+```json5
+{
+  agent: { workspace: "~/clawd" },
+  whatsapp: {
+    // Allowlist is DMs only; including your own number enables self-chat mode.
+    allowFrom: ["+15555550123"],
+    groups: { "*": { requireMention: true } }
+  },
+  routing: {
+    groupChat: {
+      mentionPatterns: ["@clawd", "reisponde"]
+    }
+  }
 }
 ```
 
 ## Common options
+
+### Env vars + `.env`
+
+CLAWDIS reads env vars from the parent process (shell, launchd/systemd, CI, etc.).
+
+Additionally, it loads:
+- `.env` from the current working directory (if present)
+- a global fallback `.env` from `~/.clawdis/.env` (aka `$CLAWDIS_STATE_DIR/.env`)
+
+Neither `.env` file overrides existing env vars.
+
+### `env.shellEnv` (optional)
+
+Opt-in convenience: if enabled and none of the expected keys are set yet, CLAWDIS runs your login shell and imports only the missing expected keys (never overrides).
+This effectively sources your shell profile.
+
+```json5
+{
+  env: {
+    shellEnv: {
+      enabled: true,
+      timeoutMs: 15000
+    }
+  }
+}
+```
+
+Env var equivalent:
+- `CLAWDIS_LOAD_SHELL_ENV=1`
+- `CLAWDIS_SHELL_ENV_TIMEOUT_MS=15000`
+
+### Auth storage (OAuth + API keys)
+
+Clawdis stores **auth profiles** (OAuth + API keys) in:
+- `~/.clawdis/agent/auth-profiles.json`
+
+Legacy OAuth imports:
+- `~/.clawdis/credentials/oauth.json` (or `$CLAWDIS_STATE_DIR/credentials/oauth.json`)
+
+The embedded Pi agent maintains a runtime cache at:
+- `~/.clawdis/agent/auth.json` (managed automatically; don’t edit manually)
+
+Overrides:
+- OAuth dir (legacy import only): `CLAWDIS_OAUTH_DIR`
+- Agent dir: `CLAWDIS_AGENT_DIR` (preferred), `PI_CODING_AGENT_DIR` (legacy)
+
+On first use, Clawdis imports `oauth.json` entries into `auth-profiles.json`.
+
+### `auth`
+
+Optional metadata for auth profiles. This does **not** store secrets; it maps
+profile IDs to a provider + mode (and optional email) and defines the provider
+rotation order used for failover.
+
+```json5
+{
+  auth: {
+    profiles: {
+      "anthropic:default": { provider: "anthropic", mode: "oauth", email: "me@example.com" },
+      "anthropic:work": { provider: "anthropic", mode: "api_key" }
+    },
+    order: {
+      anthropic: ["anthropic:default", "anthropic:work"]
+    }
+  }
+}
+```
 
 ### `identity`
 
 Optional agent identity used for defaults and UX. This is written by the macOS onboarding assistant.
 
 If set, CLAWDIS derives defaults (only when you haven’t set them explicitly):
-
-- `messages.responsePrefix` from `identity.emoji`
-- `routing.groupChat.mentionPatterns` from `identity.name` (so “@Samantha” works in groups)
+- `messages.ackReaction` from `identity.emoji` (falls back to 👀)
+- `routing.groupChat.mentionPatterns` from `identity.name` (so “@Samantha” works in groups across Telegram/Slack/Discord/iMessage/WhatsApp)
 
 ```json5
 {
-  identity: { name: "Samantha", theme: "helpful sloth", emoji: "🦥" },
+  identity: { name: "Samantha", theme: "helpful sloth", emoji: "🦥" }
 }
 ```
 
@@ -53,11 +148,11 @@ Metadata written by CLI wizards (`onboard`, `configure`, `doctor`, `update`).
 {
   wizard: {
     lastRunAt: "2026-01-01T00:00:00.000Z",
-    lastRunVersion: "2.0.0-beta5",
+    lastRunVersion: "2026.1.4",
     lastRunCommit: "abc1234",
     lastRunCommand: "configure",
-    lastRunMode: "local",
-  },
+    lastRunMode: "local"
+  }
 }
 ```
 
@@ -68,6 +163,9 @@ Metadata written by CLI wizards (`onboard`, `configure`, `doctor`, `update`).
 - Console output can be tuned separately via:
   - `logging.consoleLevel` (defaults to `info`, bumps to `debug` when `--verbose`)
   - `logging.consoleStyle` (`pretty` | `compact` | `json`)
+- Tool summaries can be redacted to avoid leaking secrets:
+  - `logging.redactSensitive` (`off` | `tools`, default: `tools`)
+  - `logging.redactPatterns` (array of regex strings; overrides defaults)
 
 ```json5
 {
@@ -76,17 +174,28 @@ Metadata written by CLI wizards (`onboard`, `configure`, `doctor`, `update`).
     file: "/tmp/clawdis/clawdis.log",
     consoleLevel: "info",
     consoleStyle: "pretty",
-  },
+    redactSensitive: "tools",
+    redactPatterns: [
+      // Example: override defaults with your own rules.
+      "\\bTOKEN\\b\\s*[=:]\\s*([\"']?)([^\\s\"']+)\\1",
+      "/\\bsk-[A-Za-z0-9_-]{8,}\\b/gi"
+    ]
+  }
 }
 ```
 
 ### `whatsapp.allowFrom`
 
-Allowlist of E.164 phone numbers that may trigger WhatsApp auto-replies.
+Allowlist of E.164 phone numbers that may trigger WhatsApp auto-replies (**DMs only**).
+If empty, the default allowlist is your own WhatsApp number (self-chat mode).
+For groups, use `whatsapp.groupPolicy` + `whatsapp.groupAllowFrom`.
 
 ```json5
 {
-  whatsapp: { allowFrom: ["+15555550123", "+447700900123"] },
+  whatsapp: {
+    allowFrom: ["+15555550123", "+447700900123"],
+    textChunkLimit: 4000 // optional outbound chunk size (chars)
+  }
 }
 ```
 
@@ -94,16 +203,85 @@ Allowlist of E.164 phone numbers that may trigger WhatsApp auto-replies.
 
 Group messages default to **require mention** (either metadata mention or regex patterns). Applies to WhatsApp, Telegram, Discord, and iMessage group chats.
 
+**Mention types:**
+- **Metadata mentions**: Native platform @-mentions (e.g., WhatsApp tap-to-mention). Ignored in WhatsApp self-chat mode (see `whatsapp.allowFrom`).
+- **Text patterns**: Regex patterns defined in `mentionPatterns`. Always checked regardless of self-chat mode.
+- Mention gating is enforced only when mention detection is possible (native mentions or at least one `mentionPattern`).
+
 ```json5
 {
   routing: {
     groupChat: {
-      mentionPatterns: ["@clawd", "clawdbot", "clawd"],
-      historyLimit: 50,
-    },
-  },
+      mentionPatterns: ["@clawd", "clawdis", "clawd"],
+      historyLimit: 50
+    }
+  }
 }
 ```
+
+Mention gating defaults live per provider (`whatsapp.groups`, `telegram.groups`, `imessage.groups`, `discord.guilds`). When `*.groups` is set, it also acts as a group allowlist; include `"*"` to allow all groups.
+
+To respond **only** to specific text triggers (ignoring native @-mentions):
+```json5
+{
+  whatsapp: {
+    // Include your own number to enable self-chat mode (ignore native @-mentions).
+    allowFrom: ["+15555550123"],
+    groups: { "*": { requireMention: true } }
+  },
+  routing: {
+    groupChat: {
+      // Only these text patterns will trigger responses
+      mentionPatterns: ["reisponde", "@clawd"]
+    }
+  }
+}
+```
+
+### Group policy (per provider)
+
+Use `*.groupPolicy` to control whether group/room messages are accepted at all:
+
+```json5
+{
+  whatsapp: {
+    groupPolicy: "allowlist",
+    groupAllowFrom: ["+15551234567"]
+  },
+  telegram: {
+    groupPolicy: "allowlist",
+    groupAllowFrom: ["tg:123456789", "@alice"]
+  },
+  signal: {
+    groupPolicy: "allowlist",
+    groupAllowFrom: ["+15551234567"]
+  },
+  imessage: {
+    groupPolicy: "allowlist",
+    groupAllowFrom: ["chat_id:123"]
+  },
+  discord: {
+    groupPolicy: "allowlist",
+    guilds: {
+      "GUILD_ID": {
+        channels: { help: { allow: true } }
+      }
+    }
+  },
+  slack: {
+    groupPolicy: "allowlist",
+    channels: { "#general": { allow: true } }
+  }
+}
+```
+
+Notes:
+- `"open"` (default): groups bypass allowlists; mention-gating still applies.
+- `"disabled"`: block all group/room messages.
+- `"allowlist"`: only allow groups/rooms that match the configured allowlist.
+- WhatsApp/Telegram/Signal/iMessage use `groupAllowFrom` (fallback: explicit `allowFrom`).
+- Discord/Slack use channel allowlists (`discord.guilds.*.channels`, `slack.channels`).
+- Group DMs (Discord/Slack) are still controlled by `dm.groupEnabled` + `dm.groupChannels`.
 
 ### `routing.queue`
 
@@ -113,16 +291,19 @@ Controls how inbound messages behave when an agent run is already active.
 {
   routing: {
     queue: {
-      mode: "interrupt", // global default: queue | interrupt
+      mode: "collect", // steer | followup | collect | steer-backlog (steer+backlog ok) | interrupt (queue=steer legacy)
+      debounceMs: 1000,
+      cap: 20,
+      drop: "summarize", // old | new | summarize
       bySurface: {
-        whatsapp: "interrupt",
-        telegram: "interrupt",
-        discord: "queue",
-        imessage: "interrupt",
-        webchat: "queue",
-      },
-    },
-  },
+        whatsapp: "collect",
+        telegram: "collect",
+        discord: "collect",
+        imessage: "collect",
+        webchat: "collect"
+      }
+    }
+  }
 }
 ```
 
@@ -141,9 +322,9 @@ Set `web.enabled: false` to keep it off by default.
       maxMs: 120000,
       factor: 1.4,
       jitter: 0.2,
-      maxAttempts: 0,
-    },
-  },
+      maxAttempts: 0
+    }
+  }
 }
 ```
 
@@ -163,8 +344,8 @@ Set `telegram.enabled: false` to disable automatic startup.
     proxy: "socks5://localhost:9050",
     webhookUrl: "https://example.com/telegram-webhook",
     webhookSecret: "secret",
-    webhookPath: "/telegram-webhook",
-  },
+    webhookPath: "/telegram-webhook"
+  }
 }
 ```
 
@@ -177,41 +358,119 @@ Configure the Discord bot by setting the bot token and optional gating:
   discord: {
     enabled: true,
     token: "your-bot-token",
-    mediaMaxMb: 8, // clamp inbound media size
-    enableReactions: true, // allow agent-triggered reactions
-    slashCommand: {
-      // user-installed app slash commands
+    mediaMaxMb: 8,                          // clamp inbound media size
+    actions: {                              // tool action gates (false disables)
+      reactions: true,
+      stickers: true,
+      polls: true,
+      permissions: true,
+      messages: true,
+      threads: true,
+      pins: true,
+      search: true,
+      memberInfo: true,
+      roleInfo: true,
+      roles: false,
+      channelInfo: true,
+      voiceStatus: true,
+      events: true,
+      moderation: false
+    },
+    replyToMode: "off",                     // off | first | all
+    slashCommand: {                         // user-installed app slash commands
       enabled: true,
       name: "clawd",
       sessionPrefix: "discord:slash",
-      ephemeral: true,
+      ephemeral: true
     },
     dm: {
-      enabled: true, // disable all DMs when false
+      enabled: true,                        // disable all DMs when false
       allowFrom: ["1234567890", "steipete"], // optional DM allowlist (ids or names)
-      groupEnabled: false, // enable group DMs
-      groupChannels: ["clawd-dm"], // optional group DM allowlist
+      groupEnabled: false,                 // enable group DMs
+      groupChannels: ["clawd-dm"]          // optional group DM allowlist
     },
     guilds: {
-      "123456789012345678": {
-        // guild id (preferred) or slug
+      "123456789012345678": {               // guild id (preferred) or slug
         slug: "friends-of-clawd",
-        requireMention: false, // per-guild default
-        users: ["987654321098765432"], // optional per-guild user allowlist
+        requireMention: false,              // per-guild default
+        reactionNotifications: "own",       // off | own | all | allowlist
+        users: ["987654321098765432"],      // optional per-guild user allowlist
         channels: {
           general: { allow: true },
-          help: { allow: true, requireMention: true },
-        },
-      },
+          help: { allow: true, requireMention: true }
+        }
+      }
     },
-    historyLimit: 20, // include last N guild messages as context
-  },
+    historyLimit: 20                        // include last N guild messages as context
+  }
 }
 ```
 
 Clawdis starts Discord only when a `discord` config section exists. The token is resolved from `DISCORD_BOT_TOKEN` or `discord.token` (unless `discord.enabled` is `false`). Use `user:<id>` (DM) or `channel:<id>` (guild channel) when specifying delivery targets for cron/CLI commands.
 Guild slugs are lowercase with spaces replaced by `-`; channel keys use the slugged channel name (no leading `#`). Prefer guild ids as keys to avoid rename ambiguity.
+Reaction notification modes:
+- `off`: no reaction events.
+- `own`: reactions on the bot's own messages (default).
+- `all`: all reactions on all messages.
+- `allowlist`: reactions from `guilds.<id>.users` on all messages (empty list disables).
 
+### `slack` (socket mode)
+
+Slack runs in Socket Mode and requires both a bot token and app token:
+
+```json5
+{
+  slack: {
+    enabled: true,
+    botToken: "xoxb-...",
+    appToken: "xapp-...",
+    dm: {
+      enabled: true,
+      allowFrom: ["U123", "U456", "*"],
+      groupEnabled: false,
+      groupChannels: ["G123"]
+    },
+    channels: {
+      C123: { allow: true, requireMention: true },
+      "#general": { allow: true, requireMention: false }
+    },
+    reactionNotifications: "own", // off | own | all | allowlist
+    reactionAllowlist: ["U123"],
+    actions: {
+      reactions: true,
+      messages: true,
+      pins: true,
+      memberInfo: true,
+      emojiList: true
+    },
+    slashCommand: {
+      enabled: true,
+      name: "clawd",
+      sessionPrefix: "slack:slash",
+      ephemeral: true
+    },
+    textChunkLimit: 4000,
+    mediaMaxMb: 20
+  }
+}
+```
+
+Clawdis starts Slack when the provider is enabled and both tokens are set (via config or `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN`). Use `user:<id>` (DM) or `channel:<id>` when specifying delivery targets for cron/CLI commands.
+
+Reaction notification modes:
+- `off`: no reaction events.
+- `own`: reactions on the bot's own messages (default).
+- `all`: all reactions on all messages.
+- `allowlist`: reactions from `slack.reactionAllowlist` on all messages (empty list disables).
+
+Slack action groups (gate `slack` tool actions):
+| Action group | Default | Notes |
+| --- | --- | --- |
+| reactions | enabled | React + list reactions |
+| messages | enabled | Read/send/edit/delete |
+| pins | enabled | Pin/unpin/list |
+| memberInfo | enabled | Member info |
+| emojiList | enabled | Custom emoji list |
 ### `imessage` (imsg CLI)
 
 Clawdis spawns `imsg rpc` (JSON-RPC over stdio). No daemon or port required.
@@ -226,13 +485,12 @@ Clawdis spawns `imsg rpc` (JSON-RPC over stdio). No daemon or port required.
     includeAttachments: false,
     mediaMaxMb: 16,
     service: "auto",
-    region: "US",
-  },
+    region: "US"
+  }
 }
 ```
 
 Notes:
-
 - Requires Full Disk Access to the Messages DB.
 - The first send will prompt for Messages automation permission.
 - Prefer `chat_id:<id>` targets. Use `imsg chats --limit 20` to list chats.
@@ -245,23 +503,51 @@ Default: `~/clawd`.
 
 ```json5
 {
-  agent: { workspace: "~/clawd" },
+  agent: { workspace: "~/clawd" }
+}
+```
+
+If `agent.sandbox` is enabled, non-main sessions can override this with their
+own per-session workspaces under `agent.sandbox.workspaceRoot`.
+
+### `agent.userTimezone`
+
+Sets the user’s timezone for **system prompt context** (not for timestamps in
+message envelopes). If unset, Clawdis uses the host timezone at runtime.
+
+```json5
+{
+  agent: { userTimezone: "America/Chicago" }
 }
 ```
 
 ### `messages`
 
-Controls inbound/outbound prefixes and timestamps.
+Controls inbound/outbound prefixes and optional ack reactions.
 
 ```json5
 {
   messages: {
     messagePrefix: "[clawdis]",
     responsePrefix: "🦞",
-    timestampPrefix: "Europe/London",
-  },
+    ackReaction: "👀",
+    ackReactionScope: "group-mentions"
+  }
 }
 ```
+
+`responsePrefix` is applied to **all outbound replies** (tool summaries, block
+streaming, final replies) across providers unless already present.
+
+`ackReaction` sends a best-effort emoji reaction to acknowledge inbound messages
+on providers that support reactions (Slack/Discord/Telegram). Defaults to the
+configured `identity.emoji` when set, otherwise `"👀"`. Set it to `""` to disable.
+
+`ackReactionScope` controls when reactions fire:
+- `group-mentions` (default): only when a group/room requires mentions **and** the bot was mentioned
+- `group-all`: all group/room messages
+- `direct`: direct messages only
+- `all`: all messages
 
 ### `talk`
 
@@ -275,174 +561,240 @@ Defaults for Talk mode (macOS/iOS/Android). Voice IDs fall back to `ELEVENLABS_V
     voiceId: "elevenlabs_voice_id",
     voiceAliases: {
       Clawd: "EXAVITQu4vr4xnSDxMaL",
-      Roger: "CwhRBWXzGAHq8TQ4Fs17",
+      Roger: "CwhRBWXzGAHq8TQ4Fs17"
     },
     modelId: "eleven_v3",
     outputFormat: "mp3_44100_128",
     apiKey: "elevenlabs_api_key",
-    interruptOnSpeech: true,
-  },
+    interruptOnSpeech: true
+  }
 }
 ```
 
 ### `agent`
 
 Controls the embedded agent runtime (model/thinking/verbose/timeouts).
-`allowedModels` lets `/model` list/filter and enforce a per-session allowlist
-(omit to show the full catalog).
-`modelAliases` adds short names for `/model` (alias -> provider/model).
+`agent.models` defines the configured model catalog (and acts as the allowlist for `/model`).
+`agent.model.primary` sets the default model; `agent.model.fallbacks` are global failovers.
+`agent.imageModel` is optional and is **only used if the primary model lacks image input**.
+
+Clawdis also ships a few built-in alias shorthands. Defaults only apply when the model
+is already present in `agent.models`:
+
+- `opus` -> `anthropic/claude-opus-4-5`
+- `sonnet` -> `anthropic/claude-sonnet-4-5`
+- `gpt` -> `openai/gpt-5.2`
+- `gpt-mini` -> `openai/gpt-5-mini`
+- `gemini` -> `google/gemini-3-pro-preview`
+- `gemini-flash` -> `google/gemini-3-flash-preview`
+
+If you configure the same alias name (case-insensitive) yourself, your value wins (defaults never override).
 
 ```json5
 {
   agent: {
-    model: "anthropic/claude-opus-4-5",
-    allowedModels: ["anthropic/claude-opus-4-5", "anthropic/claude-sonnet-4-1"],
-    modelAliases: {
-      Opus: "anthropic/claude-opus-4-5",
-      Sonnet: "anthropic/claude-sonnet-4-1",
+    models: {
+      "anthropic/claude-opus-4-5": { alias: "Opus" },
+      "anthropic/claude-sonnet-4-1": { alias: "Sonnet" },
+      "openrouter/deepseek/deepseek-r1:free": {}
+    },
+    model: {
+      primary: "anthropic/claude-opus-4-5",
+      fallbacks: [
+        "openrouter/deepseek/deepseek-r1:free",
+        "openrouter/meta-llama/llama-3.3-70b-instruct:free"
+      ]
+    },
+    imageModel: {
+      primary: "openrouter/qwen/qwen-2.5-vl-72b-instruct:free",
+      fallbacks: [
+        "openrouter/google/gemini-2.0-flash-vision:free"
+      ]
     },
     thinkingDefault: "low",
     verboseDefault: "off",
+    elevatedDefault: "on",
     timeoutSeconds: 600,
     mediaMaxMb: 5,
     heartbeat: {
       every: "30m",
-      target: "last",
+      target: "last"
     },
     maxConcurrent: 3,
     bash: {
-      backgroundMs: 20000,
+      backgroundMs: 10000,
       timeoutSec: 1800,
-      cleanupMs: 1800000,
+      cleanupMs: 1800000
     },
-    contextTokens: 200000,
-  },
+    contextTokens: 200000
+  }
 }
 ```
 
-`agent.model` should be set as `provider/model` (e.g. `anthropic/claude-opus-4-5`).
-If `modelAliases` is configured, you may also use the alias key (e.g. `Opus`).
+Block streaming:
+- `agent.blockStreamingDefault`: `"on"`/`"off"` (default on).
+- `agent.blockStreamingBreak`: `"text_end"` or `"message_end"` (default: text_end).
+- `agent.blockStreamingChunk`: soft chunking for streamed blocks. Defaults to
+  800–1200 chars, prefers paragraph breaks (`\n\n`), then newlines, then sentences.
+  Example:
+  ```json5
+  {
+    agent: {
+      blockStreamingChunk: { minChars: 800, maxChars: 1200 }
+    }
+  }
+  ```
+
+`agent.model.primary` should be set as `provider/model` (e.g. `anthropic/claude-opus-4-5`).
+Aliases come from `agent.models.*.alias` (e.g. `Opus`).
 If you omit the provider, CLAWDIS currently assumes `anthropic` as a temporary
 deprecation fallback.
 Z.AI models are available as `zai/<model>` (e.g. `zai/glm-4.7`) and require
 `ZAI_API_KEY` (or legacy `Z_AI_API_KEY`) in the environment.
 
 `agent.heartbeat` configures periodic heartbeat runs:
-
 - `every`: duration string (`ms`, `s`, `m`, `h`); default unit minutes. Omit or set
   `0m` to disable.
 - `model`: optional override model for heartbeat runs (`provider/model`).
 - `target`: optional delivery channel (`last`, `whatsapp`, `telegram`, `discord`, `imessage`, `none`). Default: `last`.
 - `to`: optional recipient override (E.164 for WhatsApp, chat id for Telegram).
 - `prompt`: optional override for the heartbeat body (default: `HEARTBEAT`).
+- `ackMaxChars`: max chars allowed after `HEARTBEAT_OK` before delivery (default: 30).
 
 `agent.bash` configures background bash defaults:
-
-- `backgroundMs`: time before auto-background (ms, default 20000)
+- `backgroundMs`: time before auto-background (ms, default 10000)
 - `timeoutSec`: auto-kill after this runtime (seconds, default 1800)
 - `cleanupMs`: how long to keep finished sessions in memory (ms, default 1800000)
+
+`agent.tools` configures a global tool allow/deny policy (deny wins).
+This is applied even when the Docker sandbox is **off**.
+
+Example (disable browser/canvas everywhere):
+```json5
+{
+  agent: {
+    tools: {
+      deny: ["browser", "canvas"]
+    }
+  }
+}
+```
+
+`agent.elevated` controls elevated (host) bash access:
+- `enabled`: allow elevated mode (default true)
+- `allowFrom`: per-surface allowlists (empty = disabled)
+  - `whatsapp`: E.164 numbers
+  - `telegram`: chat ids or usernames
+  - `discord`: user ids or usernames (falls back to `discord.dm.allowFrom` if omitted)
+  - `signal`: E.164 numbers
+  - `imessage`: handles/chat ids
+  - `webchat`: session ids or usernames
+
+Example:
+```json5
+{
+  agent: {
+    elevated: {
+      enabled: true,
+      allowFrom: {
+        whatsapp: ["+15555550123"],
+        discord: ["steipete", "1234567890123"]
+      }
+    }
+  }
+}
+```
 
 `agent.maxConcurrent` sets the maximum number of embedded agent runs that can
 execute in parallel across sessions. Each session is still serialized (one run
 per session key at a time). Default: 1.
 
-### `mcp` (Model Context Protocol servers)
+### `agent.sandbox`
 
-Configure external MCP servers for tool integrations. Servers are spawned on-demand when their tools are first called.
+Optional per-session **Docker sandboxing** for the embedded agent. Intended for
+non-main sessions so they cannot access your host system.
 
-```json5
-{
-  mcp: {
-    enabled: true,
-    servers: {
-      "server-name": {
-        command: "npx",
-        args: ["@example/mcp-server"],
-        env: { API_KEY: "..." },
-        initTimeoutMs: 30000,
-        callTimeoutMs: 60000,
-      },
-    },
-  },
-}
-```
-
-Fields:
-
-- `enabled`: Enable/disable MCP server spawning (default: true when servers defined).
-- `servers.<name>.command`: Executable to spawn (e.g., `npx`, `uvx`, `node`).
-- `servers.<name>.args`: Command-line arguments for the server.
-- `servers.<name>.env`: Environment variables passed to the server process.
-- `servers.<name>.initTimeoutMs`: Timeout for server initialization (default: 30000).
-- `servers.<name>.callTimeoutMs`: Timeout for tool calls (default: 60000).
-
-MCP tools appear with the naming convention `mcp__<server>__<tool>`. For example, a server named `exa` with a `web_search` tool becomes `mcp__exa__web_search`.
-
-### `agentHooks` (Agent lifecycle hooks)
-
-Agent hooks enable observability and validation at various points in agent execution. Hooks can be shell commands or skill invocations.
-
-**Important**: This is different from `hooks` (Gateway HTTP webhooks). Agent hooks run during the agent execution lifecycle.
+Defaults (if enabled):
+- one container per session
+- Debian bookworm-slim based image
+- workspace per session under `~/.clawdis/sandboxes`
+- auto-prune: idle > 24h OR age > 7d
+- tools: allow only `bash`, `process`, `read`, `write`, `edit` (deny wins)
+- optional sandboxed browser (Chromium + CDP, noVNC observer)
+- hardening knobs: `network`, `user`, `pidsLimit`, `memory`, `cpus`, `ulimits`, `seccompProfile`, `apparmorProfile`
 
 ```json5
 {
-  agentHooks: {
-    enabled: true,
-    PreToolUse: [
-      {
-        matcher: "bash",
-        type: "command",
-        command: "scripts/validate-command.sh",
-        timeoutMs: 5000,
+  agent: {
+    sandbox: {
+      mode: "non-main", // off | non-main | all
+      perSession: true,
+      workspaceRoot: "~/.clawdis/sandboxes",
+      docker: {
+        image: "clawdis-sandbox:bookworm-slim",
+        containerPrefix: "clawdis-sbx-",
+        workdir: "/workspace",
+        readOnlyRoot: true,
+        tmpfs: ["/tmp", "/var/tmp", "/run"],
+        network: "none",
+        user: "1000:1000",
+        capDrop: ["ALL"],
+        env: { LANG: "C.UTF-8" },
+        setupCommand: "apt-get update && apt-get install -y git curl jq",
+        pidsLimit: 256,
+        memory: "1g",
+        memorySwap: "2g",
+        cpus: 1,
+        ulimits: {
+          nofile: { soft: 1024, hard: 2048 },
+          nproc: 256
+        },
+        seccompProfile: "/path/to/seccomp.json",
+        apparmorProfile: "clawdis-sandbox",
+        dns: ["1.1.1.1", "8.8.8.8"],
+        extraHosts: ["internal.service:10.0.0.5"]
       },
-    ],
-    PostToolUse: [
-      {
-        matcher: "*",
-        type: "command",
-        command: "scripts/log-tool.sh",
+      browser: {
+        enabled: false,
+        image: "clawdis-sandbox-browser:bookworm-slim",
+        containerPrefix: "clawdis-sbx-browser-",
+        cdpPort: 9222,
+        vncPort: 5900,
+        noVncPort: 6080,
+        headless: false,
+        enableNoVnc: true
       },
-    ],
-    PostAgentTurn: [
-      {
-        type: "skill",
-        skill: "diary",
+      tools: {
+        allow: ["bash", "process", "read", "write", "edit"],
+        deny: ["browser", "canvas", "nodes", "cron", "discord", "gateway"]
       },
-    ],
-    SessionEnd: [
-      {
-        type: "command",
-        command: "scripts/cleanup.sh",
-      },
-    ],
-  },
+      prune: {
+        idleHours: 24,  // 0 disables idle pruning
+        maxAgeDays: 7   // 0 disables max-age pruning
+      }
+    }
+  }
 }
 ```
 
-Hook types:
+Build the default sandbox image once with:
+```bash
+scripts/sandbox-setup.sh
+```
 
-| Hook            | Timing                     | Can Block                  |
-| --------------- | -------------------------- | -------------------------- |
-| `PreToolUse`    | Before tool execution      | Yes (non-zero exit blocks) |
-| `PostToolUse`   | After tool execution       | No                         |
-| `PostAgentTurn` | After agent turn completes | No                         |
-| `SessionEnd`    | When session ends          | No                         |
+Note: sandbox containers default to `network: "none"`; set `agent.sandbox.docker.network`
+to `"bridge"` (or your custom network) if the agent needs outbound access.
 
-Hook entry fields:
+Build the optional browser image with:
+```bash
+scripts/sandbox-browser-setup.sh
+```
 
-- `matcher`: Glob pattern for tool name matching (e.g., `bash`, `mcp__*`, `*`). Only for Pre/PostToolUse.
-- `type`: `"command"` for shell scripts or `"skill"` for skill invocation.
-- `command`: Shell command to execute (for command type).
-- `skill`: Skill key to invoke (for skill type).
-- `timeoutMs`: Execution timeout in milliseconds.
-
-Environment variables available to command hooks:
-
-- `HOOK_TOOL_NAME`: Name of the tool being executed
-- `HOOK_TOOL_ARGS`: JSON-encoded tool arguments
-- `HOOK_TOOL_RESULT`: JSON-encoded tool result (PostToolUse only)
-- `HOOK_SESSION_KEY`: Session identifier
-- `HOOK_METADATA`: Additional context (JSON)
+When `agent.sandbox.browser.enabled=true`, the browser tool uses a sandboxed
+Chromium instance (CDP). If noVNC is enabled (default when headless=false),
+the noVNC URL is injected into the system prompt so the agent can reference it.
+This does not require `browser.enabled` in the main config; the sandbox control
+URL is injected per session.
 
 ### `models` (custom providers + base URLs)
 
@@ -453,15 +805,19 @@ Clawdis config under `models.providers`.
 
 When `models.providers` is present, Clawdis writes/merges a `models.json` into
 `~/.clawdis/agent/` on startup:
-
 - default behavior: **merge** (keeps existing providers, overrides on name)
 - set `models.mode: "replace"` to overwrite the file contents
 
-Select the model via `agent.model` (provider/model).
+Select the model via `agent.model.primary` (provider/model).
 
 ```json5
 {
-  agent: { model: "custom-proxy/llama-3.1-8b" },
+  agent: {
+    model: { primary: "custom-proxy/llama-3.1-8b" },
+    models: {
+      "custom-proxy/llama-3.1-8b": {}
+    }
+  },
   models: {
     mode: "merge",
     providers: {
@@ -477,12 +833,12 @@ Select the model via `agent.model` (provider/model).
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 128000,
-            maxTokens: 32000,
-          },
-        ],
-      },
-    },
-  },
+            maxTokens: 32000
+          }
+        ]
+      }
+    }
+  }
 }
 ```
 
@@ -494,12 +850,11 @@ via **LM Studio** using the **Responses API**.
 ```json5
 {
   agent: {
-    model: "Minimax",
-    allowedModels: ["anthropic/claude-opus-4-5", "lmstudio/minimax-m2.1-gs32"],
-    modelAliases: {
-      Opus: "anthropic/claude-opus-4-5",
-      Minimax: "lmstudio/minimax-m2.1-gs32",
-    },
+    model: { primary: "lmstudio/minimax-m2.1-gs32" },
+    models: {
+      "anthropic/claude-opus-4-5": { alias: "Opus" },
+      "lmstudio/minimax-m2.1-gs32": { alias: "Minimax" }
+    }
   },
   models: {
     mode: "merge",
@@ -516,23 +871,21 @@ via **LM Studio** using the **Responses API**.
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 196608,
-            maxTokens: 8192,
-          },
-        ],
-      },
-    },
-  },
+            maxTokens: 8192
+          }
+        ]
+      }
+    }
+  }
 }
 ```
 
 Notes:
-
 - LM Studio must have the model loaded and the local server enabled (default URL above).
 - Responses API enables clean reasoning/output separation; WhatsApp sees only final text.
 - Adjust `contextWindow`/`maxTokens` if your LM Studio context length differs.
 
 Notes:
-
 - Supported APIs: `openai-completions`, `openai-responses`, `anthropic-messages`,
   `google-generative-ai`
 - Use `authHeader: true` + `headers` for custom auth needs.
@@ -550,10 +903,25 @@ Controls session scoping, idle expiry, reset triggers, and where the session sto
     idleMinutes: 60,
     resetTriggers: ["/new", "/reset"],
     store: "~/.clawdis/sessions/sessions.json",
-    mainKey: "main",
-  },
+    // mainKey is ignored; primary key is fixed to "main"
+    agentToAgent: {
+      // Max ping-pong reply turns between requester/target (0–5).
+      maxPingPongTurns: 5
+    },
+    sendPolicy: {
+      rules: [
+        { action: "deny", match: { surface: "discord", chatType: "group" } }
+      ],
+      default: "allow"
+    }
+  }
 }
 ```
+
+Fields:
+- `agentToAgent.maxPingPongTurns`: max reply-back turns between requester/target (0–5, default 5).
+- `sendPolicy.default`: `allow` or `deny` fallback when no rule matches.
+- `sendPolicy.rules[]`: match by `surface` (provider), `chatType` (`direct|group|room`), or `keyPrefix` (e.g. `cron:`). First deny wins; otherwise allow.
 
 ### `skills` (skills config)
 
@@ -562,7 +930,6 @@ overrides. Applies to **bundled** skills and `~/.clawdis/skills` (workspace skil
 still win on name conflicts).
 
 Fields:
-
 - `allowBundled`: optional allowlist for **bundled** skills only. If set, only those
   bundled skills are eligible (managed/workspace skills unaffected).
 - `load.extraDirs`: additional skill directories to scan (lowest precedence).
@@ -571,17 +938,9 @@ Fields:
 - `entries.<skillKey>`: per-skill config overrides.
 
 Per-skill fields:
-
 - `enabled`: set `false` to disable a skill even if it’s bundled/installed.
 - `env`: environment variables injected for the agent run (only if not already set).
 - `apiKey`: optional convenience for skills that declare a primary env var (e.g. `nano-banana-pro` → `GEMINI_API_KEY`).
-
-Linux/VPS note:
-
-- If the gateway runs under `systemd`, make sure the service environment includes
-  PATH entries for Linuxbrew and uv tools (for example,
-  `/home/linuxbrew/.linuxbrew/bin`, `/home/linuxbrew/.linuxbrew/sbin`,
-  `/home/clawdis/.local/bin`). Update the service env file and restart the gateway.
 
 Example:
 
@@ -592,36 +951,40 @@ Example:
     load: {
       extraDirs: [
         "~/Projects/agent-scripts/skills",
-        "~/Projects/oss/some-skill-pack/skills",
-      ],
+        "~/Projects/oss/some-skill-pack/skills"
+      ]
     },
     install: {
       preferBrew: true,
-      nodeManager: "npm",
+      nodeManager: "npm"
     },
     entries: {
       "nano-banana-pro": {
         apiKey: "GEMINI_KEY_HERE",
         env: {
-          GEMINI_API_KEY: "GEMINI_KEY_HERE",
-        },
+          GEMINI_API_KEY: "GEMINI_KEY_HERE"
+        }
       },
       peekaboo: { enabled: true },
-      sag: { enabled: false },
-    },
-  },
+      sag: { enabled: false }
+    }
+  }
 }
 ```
 
 ### `browser` (clawd-managed Chrome)
 
 Clawdis can start a **dedicated, isolated** Chrome/Chromium instance for clawd and expose a small loopback control server.
+Profiles can point at a **remote** Chrome via `profiles.<name>.cdpUrl`. Remote
+profiles are attach-only (start/stop/reset are disabled).
+
+`browser.cdpUrl` remains for legacy single-profile configs and as the base
+scheme/host for profiles that only set `cdpPort`.
 
 Defaults:
-
 - enabled: `true`
 - control URL: `http://127.0.0.1:18791` (CDP uses `18792`)
-- CDP URL: `http://127.0.0.1:18792` (control URL + 1)
+- CDP URL: `http://127.0.0.1:18792` (control URL + 1, legacy single-profile)
 - profile color: `#FF4500` (lobster-orange)
 - Note: the control server is started by the running gateway (Clawdis.app menubar, or `clawdis gateway`).
 
@@ -630,14 +993,20 @@ Defaults:
   browser: {
     enabled: true,
     controlUrl: "http://127.0.0.1:18791",
-    // cdpUrl: "http://127.0.0.1:18792", // override for remote CDP
+    // cdpUrl: "http://127.0.0.1:18792", // legacy single-profile override
+    defaultProfile: "clawd",
+    profiles: {
+      clawd: { cdpPort: 18800, color: "#FF4500" },
+      work: { cdpPort: 18801, color: "#0066CC" },
+      remote: { cdpUrl: "http://10.0.0.42:9222", color: "#00AA00" }
+    },
     color: "#FF4500",
     // Advanced:
     // headless: false,
     // noSandbox: false,
     // executablePath: "/usr/bin/chromium",
     // attachOnly: false, // set true when tunneling a remote CDP to localhost
-  },
+  }
 }
 ```
 
@@ -650,8 +1019,8 @@ If unset, clients fall back to a muted light-blue.
 ```json5
 {
   ui: {
-    seamColor: "#FF4500", // hex (RRGGBB or #RRGGBB)
-  },
+    seamColor: "#FF4500" // hex (RRGGBB or #RRGGBB)
+  }
 }
 ```
 
@@ -660,28 +1029,34 @@ If unset, clients fall back to a muted light-blue.
 Use `gateway.mode` to explicitly declare whether this machine should run the Gateway.
 
 Defaults:
-
 - mode: **unset** (treated as “do not auto-start”)
 - bind: `loopback`
+- port: `18789` (single port for WS + HTTP)
 
 ```json5
 {
   gateway: {
     mode: "local", // or "remote"
+    port: 18789, // WS + HTTP multiplex
     bind: "loopback",
-    // controlUi: { enabled: true }
+    // controlUi: { enabled: true, basePath: "/clawdis" }
     // auth: { mode: "token", token: "your-token" } // token is for multi-machine CLI access
     // tailscale: { mode: "off" | "serve" | "funnel" }
-  },
+  }
 }
 ```
 
-Notes:
+Control UI base path:
+- `gateway.controlUi.basePath` sets the URL prefix where the Control UI is served.
+- Examples: `"/ui"`, `"/clawdis"`, `"/apps/clawdis"`.
+- Default: root (`/`) (unchanged).
 
+Notes:
 - `clawdis gateway` refuses to start unless `gateway.mode` is set to `local` (or you pass the override flag).
+- `gateway.port` controls the single multiplexed port used for WebSocket + HTTP (control UI, hooks, A2UI).
+- Precedence: `--port` > `CLAWDIS_GATEWAY_PORT` > `gateway.port` > default `18789`.
 
 Auth and Tailscale:
-
 - `gateway.auth.mode` sets the handshake requirements (`token` or `password`).
 - `gateway.auth.token` stores the shared token for token auth (used by the CLI on the same machine).
 - When `gateway.auth.mode` is set, only that method is accepted (plus optional Tailscale headers).
@@ -692,10 +1067,14 @@ Auth and Tailscale:
 - `gateway.tailscale.resetOnExit` resets Serve/Funnel config on shutdown.
 
 Remote client defaults (CLI):
-
 - `gateway.remote.url` sets the default Gateway WebSocket URL for CLI calls when `gateway.mode = "remote"`.
 - `gateway.remote.token` supplies the token for remote calls (leave unset for no auth).
 - `gateway.remote.password` supplies the password for remote calls (leave unset for no auth).
+
+macOS app behavior:
+- Clawdis.app watches `~/.clawdis/clawdis.json` and switches modes live when `gateway.mode` or `gateway.remote.url` changes.
+- If `gateway.mode` is unset but `gateway.remote.url` is set, the macOS app treats it as remote mode.
+- When you change connection mode in the macOS app, it writes `gateway.mode` (and `gateway.remote.url` in remote mode) back to the config file.
 
 ```json5
 {
@@ -704,10 +1083,73 @@ Remote client defaults (CLI):
     remote: {
       url: "ws://gateway.tailnet:18789",
       token: "your-token",
-      password: "your-password",
-    },
-  },
+      password: "your-password"
+    }
+  }
 }
+```
+
+### `gateway.reload` (Config hot reload)
+
+The Gateway watches `~/.clawdis/clawdis.json` (or `CLAWDIS_CONFIG_PATH`) and applies changes automatically.
+
+Modes:
+- `hybrid` (default): hot-apply safe changes; restart the Gateway for critical changes.
+- `hot`: only apply hot-safe changes; log when a restart is required.
+- `restart`: restart the Gateway on any config change.
+- `off`: disable hot reload.
+
+```json5
+{
+  gateway: {
+    reload: {
+      mode: "hybrid",
+      debounceMs: 300
+    }
+  }
+}
+```
+
+#### Hot reload matrix (files + impact)
+
+Files watched:
+- `~/.clawdis/clawdis.json` (or `CLAWDIS_CONFIG_PATH`)
+
+Hot-applied (no full gateway restart):
+- `hooks` (webhook auth/path/mappings) + `hooks.gmail` (Gmail watcher restarted)
+- `browser` (browser control server restart)
+- `cron` (cron service restart + concurrency update)
+- `agent.heartbeat` (heartbeat runner restart)
+- `web` (WhatsApp web provider restart)
+- `telegram`, `discord`, `signal`, `imessage` (provider restarts)
+- `agent`, `models`, `routing`, `messages`, `session`, `whatsapp`, `logging`, `skills`, `ui`, `talk`, `identity`, `wizard` (dynamic reads)
+
+Requires full Gateway restart:
+- `gateway` (port/bind/auth/control UI/tailscale)
+- `bridge`
+- `discovery`
+- `canvasHost`
+- Any unknown/unsupported config path (defaults to restart for safety)
+
+### Multi-instance isolation
+
+To run multiple gateways on one host, isolate per-instance state + config and use unique ports:
+- `CLAWDIS_CONFIG_PATH` (per-instance config)
+- `CLAWDIS_STATE_DIR` (sessions/creds)
+- `agent.workspace` (memories)
+- `gateway.port` (unique per instance)
+
+Convenience flags (CLI):
+- `clawdis --dev …` → uses `~/.clawdis-dev` + shifts ports from base `19001`
+- `clawdis --profile <name> …` → uses `~/.clawdis-<name>` (port via config/env/flags)
+
+See `docs/gateway.md` for the derived port mapping (gateway/bridge/browser/canvas).
+
+Example:
+```bash
+CLAWDIS_CONFIG_PATH=~/.clawdis/a.json \
+CLAWDIS_STATE_DIR=~/.clawdis-a \
+clawdis gateway --port 19001
 ```
 
 ### `hooks` (Gateway webhooks)
@@ -715,7 +1157,6 @@ Remote client defaults (CLI):
 Enable a simple HTTP webhook surface on the Gateway HTTP server.
 
 Defaults:
-
 - enabled: `false`
 - path: `/hooks`
 - maxBodyBytes: `262144` (256 KB)
@@ -735,21 +1176,20 @@ Defaults:
         wakeMode: "now",
         name: "Gmail",
         sessionKey: "hook:gmail:{{messages[0].id}}",
-        messageTemplate: "From: {{messages[0].from}}\nSubject: {{messages[0].subject}}\n{{messages[0].snippet}}",
+        messageTemplate:
+          "From: {{messages[0].from}}\nSubject: {{messages[0].subject}}\n{{messages[0].snippet}}",
       },
     ],
-  },
+  }
 }
 ```
 
 Requests must include the hook token:
-
 - `Authorization: Bearer <token>` **or**
 - `x-clawdis-token: <token>` **or**
 - `?token=<token>`
 
 Endpoints:
-
 - `POST /hooks/wake` → `{ text, mode?: "now"|"next-heartbeat" }`
 - `POST /hooks/agent` → `{ message, name?, sessionKey?, wakeMode?, deliver?, channel?, to?, thinking?, timeoutSeconds? }`
 - `POST /hooks/<name>` → resolved via `hooks.mappings`
@@ -757,7 +1197,6 @@ Endpoints:
 `/hooks/agent` always posts a summary into the main session (and can optionally trigger an immediate heartbeat via `wakeMode: "now"`).
 
 Mapping notes:
-
 - `match.path` matches the sub-path after `/hooks` (e.g. `/hooks/gmail` → `gmail`).
 - `match.source` matches a payload field (e.g. `{ source: "gmail" }`) so you can use a generic `/hooks/ingest` path.
 - Templates like `{{messages[0].subject}}` read from the payload.
@@ -769,7 +1208,7 @@ Gmail helper config (used by `clawdis hooks gmail setup` / `run`):
 {
   hooks: {
     gmail: {
-      account: "clawdbot@gmail.com",
+      account: "clawdis@gmail.com",
       topic: "projects/<project-id>/topics/gog-gmail-watch",
       subscription: "gog-gmail-watch-push",
       pushToken: "shared-push-token",
@@ -779,10 +1218,17 @@ Gmail helper config (used by `clawdis hooks gmail setup` / `run`):
       renewEveryMinutes: 720,
       serve: { bind: "127.0.0.1", port: 8788, path: "/" },
       tailscale: { mode: "funnel", path: "/gmail-pubsub" },
-    },
-  },
+    }
+  }
 }
 ```
+
+Gateway auto-start:
+- If `hooks.enabled=true` and `hooks.gmail.account` is set, the Gateway starts
+  `gog gmail watch serve` on boot and auto-renews the watch.
+- Set `CLAWDIS_SKIP_GMAIL_WATCHER=1` to disable the auto-start (for manual runs).
+- Avoid running a separate `gog gmail watch serve` alongside the Gateway; it will
+  fail with `listen tcp 127.0.0.1:8788: bind: address already in use`.
 
 Note: when `tailscale.mode` is on, Clawdis defaults `serve.path` to `/` so
 Tailscale can proxy `/gmail-pubsub` correctly (it strips the set-path prefix).
@@ -796,7 +1242,6 @@ Default port: `18793` (chosen to avoid the clawd browser CDP port `18792`)
 The server listens on the **bridge bind host** (LAN or Tailnet) so nodes can reach it.
 
 The server:
-
 - serves files under `canvasHost.root`
 - injects a tiny live-reload client into served HTML
 - watches the directory and broadcasts reloads over a WebSocket endpoint at `/__clawdis/ws`
@@ -804,17 +1249,22 @@ The server:
 - also serves A2UI at `/__clawdis__/a2ui/` and is advertised to nodes as `canvasHostUrl`
   (always used by nodes for Canvas/A2UI)
 
+Disable live reload (and file watching) if the directory is large or you hit `EMFILE`:
+- config: `canvasHost: { liveReload: false }`
+
 ```json5
 {
   canvasHost: {
     root: "~/clawd/canvas",
     port: 18793,
-  },
+    liveReload: true
+  }
 }
 ```
 
-Disable with:
+Changes to `canvasHost.*` require a gateway restart (config reload will restart).
 
+Disable with:
 - config: `canvasHost: { enabled: false }`
 - env: `CLAWDIS_SKIP_CANVAS_HOST=1`
 
@@ -823,13 +1273,11 @@ Disable with:
 The Gateway can expose a simple TCP bridge for nodes (iOS/Android), typically on port `18790`.
 
 Defaults:
-
 - enabled: `true`
 - port: `18790`
 - bind: `lan` (binds to `0.0.0.0`)
 
 Bind modes:
-
 - `lan`: `0.0.0.0` (reachable on any interface, including LAN/Wi‑Fi and Tailscale)
 - `tailnet`: bind only to the machine’s Tailscale IP (recommended for Vienna ⇄ London)
 - `loopback`: `127.0.0.1` (local only)
@@ -840,8 +1288,8 @@ Bind modes:
   bridge: {
     enabled: true,
     port: 18790,
-    bind: "tailnet",
-  },
+    bind: "tailnet"
+  }
 }
 ```
 
@@ -850,7 +1298,6 @@ Bind modes:
 When enabled, the Gateway writes a unicast DNS-SD zone for `_clawdis-bridge._tcp` under `~/.clawdis/dns/` using the standard discovery domain `clawdis.internal.`
 
 To make iOS/Android discover across networks (Vienna ⇄ London), pair this with:
-
 - a DNS server on the gateway host serving `clawdis.internal.` (CoreDNS is recommended)
 - Tailscale **split DNS** so clients resolve `clawdis.internal` via that server
 
@@ -862,7 +1309,7 @@ clawdis dns setup --apply
 
 ```json5
 {
-  discovery: { wideArea: { enabled: true } },
+  discovery: { wideArea: { enabled: true } }
 }
 ```
 
@@ -870,25 +1317,25 @@ clawdis dns setup --apply
 
 Template placeholders are expanded in `routing.transcribeAudio.command` (and any future templated command fields).
 
-| Variable           | Description                                                    |
-| ------------------ | -------------------------------------------------------------- | -------- | ------- | -------- | ------- | --- |
-| `{{Body}}`         | Full inbound message body                                      |
-| `{{BodyStripped}}` | Body with group mentions stripped (best default for agents)    |
-| `{{From}}`         | Sender identifier (E.164 for WhatsApp; may differ per surface) |
-| `{{To}}`           | Destination identifier                                         |
-| `{{MessageSid}}`   | Provider message id (when available)                           |
-| `{{SessionId}}`    | Current session UUID                                           |
-| `{{IsNewSession}}` | `"true"` when a new session was created                        |
-| `{{MediaUrl}}`     | Inbound media pseudo-URL (if present)                          |
-| `{{MediaPath}}`    | Local media path (if downloaded)                               |
-| `{{MediaType}}`    | Media type (image/audio/document/…)                            |
-| `{{Transcript}}`   | Audio transcript (when enabled)                                |
-| `{{ChatType}}`     | `"direct"` or `"group"`                                        |
-| `{{GroupSubject}}` | Group subject (best effort)                                    |
-| `{{GroupMembers}}` | Group members preview (best effort)                            |
-| `{{SenderName}}`   | Sender display name (best effort)                              |
-| `{{SenderE164}}`   | Sender phone number (best effort)                              |
-| `{{Surface}}`      | Surface hint (whatsapp                                         | telegram | discord | imessage | webchat | …)  |
+| Variable | Description |
+|----------|-------------|
+| `{{Body}}` | Full inbound message body |
+| `{{BodyStripped}}` | Body with group mentions stripped (best default for agents) |
+| `{{From}}` | Sender identifier (E.164 for WhatsApp; may differ per surface) |
+| `{{To}}` | Destination identifier |
+| `{{MessageSid}}` | Provider message id (when available) |
+| `{{SessionId}}` | Current session UUID |
+| `{{IsNewSession}}` | `"true"` when a new session was created |
+| `{{MediaUrl}}` | Inbound media pseudo-URL (if present) |
+| `{{MediaPath}}` | Local media path (if downloaded) |
+| `{{MediaType}}` | Media type (image/audio/document/…) |
+| `{{Transcript}}` | Audio transcript (when enabled) |
+| `{{ChatType}}` | `"direct"` or `"group"` |
+| `{{GroupSubject}}` | Group subject (best effort) |
+| `{{GroupMembers}}` | Group members preview (best effort) |
+| `{{SenderName}}` | Sender display name (best effort) |
+| `{{SenderE164}}` | Sender phone number (best effort) |
+| `{{Surface}}` | Surface hint (whatsapp|telegram|discord|imessage|webchat|…) |
 
 ## Cron (Gateway scheduler)
 
@@ -898,13 +1345,11 @@ Cron is a Gateway-owned scheduler for wakeups and scheduled jobs. See [Cron + wa
 {
   cron: {
     enabled: true,
-    maxConcurrentRuns: 2,
-  },
+    maxConcurrentRuns: 2
+  }
 }
 ```
 
 ---
 
-_Next: [Agent Runtime](./agent.md)_ 🦞
-
-<!-- {% endraw %} -->
+*Next: [Agent Runtime](./agent.md)* 🦞

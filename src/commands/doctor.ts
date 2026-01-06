@@ -1,14 +1,33 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { confirm, intro, note, outro } from "@clack/prompts";
 
+import {
+  DEFAULT_SANDBOX_BROWSER_IMAGE,
+  DEFAULT_SANDBOX_COMMON_IMAGE,
+  DEFAULT_SANDBOX_IMAGE,
+} from "../agents/sandbox.js";
 import { buildWorkspaceSkillStatus } from "../agents/skills-status.js";
+import { DEFAULT_AGENTS_FILENAME } from "../agents/workspace.js";
 import type { ClawdisConfig } from "../config/config.js";
 import {
   CONFIG_PATH_CLAWDIS,
+  createConfigIO,
   migrateLegacyConfig,
   readConfigFileSnapshot,
   writeConfigFile,
 } from "../config/config.js";
+import { resolveGatewayPort, resolveIsNixMode } from "../config/paths.js";
+import { GATEWAY_LAUNCH_AGENT_LABEL } from "../daemon/constants.js";
+import {
+  findLegacyGatewayServices,
+  uninstallLegacyGatewayServices,
+} from "../daemon/legacy.js";
+import { resolveGatewayProgramArguments } from "../daemon/program-args.js";
 import { resolveGatewayService } from "../daemon/service.js";
+import { runCommandWithTimeout, runExec } from "../process/exec.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { defaultRuntime } from "../runtime.js";
 import { resolveUserPath, sleep } from "../utils.js";
@@ -19,14 +38,564 @@ import {
   guardCancel,
   printWizardHeader,
 } from "./onboard-helpers.js";
+import { ensureSystemdUserLingerInteractive } from "./systemd-linger.js";
 
 function resolveMode(cfg: ClawdisConfig): "local" | "remote" {
   return cfg.gateway?.mode === "remote" ? "remote" : "local";
 }
 
-export async function doctorCommand(runtime: RuntimeEnv = defaultRuntime) {
+function resolveLegacyConfigPath(env: NodeJS.ProcessEnv): string {
+  const override = env.CLAWDIS_CONFIG_PATH?.trim();
+  if (override) return override;
+  return path.join(os.homedir(), ".clawdis", "clawdis.json");
+}
+
+function replacePathSegment(
+  value: string | undefined,
+  from: string,
+  to: string,
+): string | undefined {
+  if (!value) return value;
+  const pattern = new RegExp(`(^|[\\/])${from}([\\/]|$)`, "g");
+  if (!pattern.test(value)) return value;
+  return value.replace(pattern, `$1${to}$2`);
+}
+
+function replaceLegacyName(value: string | undefined): string | undefined {
+  if (!value) return value;
+  const replacedClawdis = value.replace(/clawdis/g, "clawdis");
+  return replacedClawdis.replace(/clawd(?!bot)/g, "clawdis");
+}
+
+function replaceModernName(value: string | undefined): string | undefined {
+  if (!value) return value;
+  if (!value.includes("clawdis")) return value;
+  return value.replace(/clawdis/g, "clawdis");
+}
+
+type SandboxScriptInfo = {
+  scriptPath: string;
+  cwd: string;
+};
+
+function resolveSandboxScript(scriptRel: string): SandboxScriptInfo | null {
+  const candidates = new Set<string>();
+  candidates.add(process.cwd());
+  const argv1 = process.argv[1];
+  if (argv1) {
+    const normalized = path.resolve(argv1);
+    candidates.add(path.resolve(path.dirname(normalized), ".."));
+    candidates.add(path.resolve(path.dirname(normalized)));
+  }
+
+  for (const root of candidates) {
+    const scriptPath = path.join(root, scriptRel);
+    if (fs.existsSync(scriptPath)) {
+      return { scriptPath, cwd: root };
+    }
+  }
+
+  return null;
+}
+
+async function runSandboxScript(
+  scriptRel: string,
+  runtime: RuntimeEnv,
+): Promise<boolean> {
+  const script = resolveSandboxScript(scriptRel);
+  if (!script) {
+    note(
+      `Unable to locate ${scriptRel}. Run it from the repo root.`,
+      "Sandbox",
+    );
+    return false;
+  }
+
+  runtime.log(`Running ${scriptRel}...`);
+  const result = await runCommandWithTimeout(["bash", script.scriptPath], {
+    timeoutMs: 20 * 60 * 1000,
+    cwd: script.cwd,
+  });
+  if (result.code !== 0) {
+    runtime.error(
+      `Failed running ${scriptRel}: ${
+        result.stderr.trim() || result.stdout.trim() || "unknown error"
+      }`,
+    );
+    return false;
+  }
+
+  runtime.log(`Completed ${scriptRel}.`);
+  return true;
+}
+
+type DoctorOptions = {
+  workspaceSuggestions?: boolean;
+};
+
+const MEMORY_SYSTEM_PROMPT = [
+  "Memory system not found in workspace.",
+  "Paste this into your agent:",
+  "",
+  "Install the memory system by applying:",
+  "https://github.com/clawdis/clawdis/commit/9ffea23f31ca1df5183b25668f8f814bee0fb34e",
+  "https://github.com/clawdis/clawdis/commit/7d1fee70e76f2f634f1b41fca927ee663914183a",
+].join("\n");
+
+async function shouldSuggestMemorySystem(
+  workspaceDir: string,
+): Promise<boolean> {
+  const memoryPaths = [
+    path.join(workspaceDir, "MEMORY.md"),
+    path.join(workspaceDir, "memory.md"),
+  ];
+
+  for (const memoryPath of memoryPaths) {
+    try {
+      await fs.promises.access(memoryPath);
+      return false;
+    } catch {
+      // keep scanning
+    }
+  }
+
+  const agentsPath = path.join(workspaceDir, DEFAULT_AGENTS_FILENAME);
+  try {
+    const content = await fs.promises.readFile(agentsPath, "utf-8");
+    if (/memory\.md/i.test(content)) return false;
+  } catch {
+    // no AGENTS.md or unreadable; treat as missing memory guidance
+  }
+
+  return true;
+}
+
+async function isDockerAvailable(): Promise<boolean> {
+  try {
+    await runExec("docker", ["version", "--format", "{{.Server.Version}}"], {
+      timeoutMs: 5_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function dockerImageExists(image: string): Promise<boolean> {
+  try {
+    await runExec("docker", ["image", "inspect", image], { timeoutMs: 5_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveSandboxDockerImage(cfg: ClawdisConfig): string {
+  const image = cfg.agent?.sandbox?.docker?.image?.trim();
+  return image ? image : DEFAULT_SANDBOX_IMAGE;
+}
+
+function resolveSandboxBrowserImage(cfg: ClawdisConfig): string {
+  const image = cfg.agent?.sandbox?.browser?.image?.trim();
+  return image ? image : DEFAULT_SANDBOX_BROWSER_IMAGE;
+}
+
+function updateSandboxDockerImage(
+  cfg: ClawdisConfig,
+  image: string,
+): ClawdisConfig {
+  return {
+    ...cfg,
+    agent: {
+      ...cfg.agent,
+      sandbox: {
+        ...cfg.agent?.sandbox,
+        docker: {
+          ...cfg.agent?.sandbox?.docker,
+          image,
+        },
+      },
+    },
+  };
+}
+
+function updateSandboxBrowserImage(
+  cfg: ClawdisConfig,
+  image: string,
+): ClawdisConfig {
+  return {
+    ...cfg,
+    agent: {
+      ...cfg.agent,
+      sandbox: {
+        ...cfg.agent?.sandbox,
+        browser: {
+          ...cfg.agent?.sandbox?.browser,
+          image,
+        },
+      },
+    },
+  };
+}
+
+type SandboxImageCheck = {
+  label: string;
+  image: string;
+  buildScript?: string;
+  updateConfig: (image: string) => void;
+};
+
+async function handleMissingSandboxImage(
+  params: SandboxImageCheck,
+  runtime: RuntimeEnv,
+) {
+  const exists = await dockerImageExists(params.image);
+  if (exists) return;
+
+  const buildHint = params.buildScript
+    ? `Build it with ${params.buildScript}.`
+    : "Build or pull it first.";
+  note(
+    `Sandbox ${params.label} image missing: ${params.image}. ${buildHint}`,
+    "Sandbox",
+  );
+
+  let built = false;
+  if (params.buildScript) {
+    const build = guardCancel(
+      await confirm({
+        message: `Build ${params.label} sandbox image now?`,
+        initialValue: true,
+      }),
+      runtime,
+    );
+    if (build) {
+      built = await runSandboxScript(params.buildScript, runtime);
+    }
+  }
+
+  if (built) return;
+
+  const legacyImage = replaceModernName(params.image);
+  if (!legacyImage || legacyImage === params.image) return;
+  const legacyExists = await dockerImageExists(legacyImage);
+  if (!legacyExists) return;
+
+  const fallback = guardCancel(
+    await confirm({
+      message: `Switch config to legacy image ${legacyImage}?`,
+      initialValue: false,
+    }),
+    runtime,
+  );
+  if (!fallback) return;
+
+  params.updateConfig(legacyImage);
+}
+
+async function maybeRepairSandboxImages(
+  cfg: ClawdisConfig,
+  runtime: RuntimeEnv,
+): Promise<ClawdisConfig> {
+  const sandbox = cfg.agent?.sandbox;
+  const mode = sandbox?.mode ?? "off";
+  if (!sandbox || mode === "off") return cfg;
+
+  const dockerAvailable = await isDockerAvailable();
+  if (!dockerAvailable) {
+    note("Docker not available; skipping sandbox image checks.", "Sandbox");
+    return cfg;
+  }
+
+  let next = cfg;
+  const changes: string[] = [];
+
+  const dockerImage = resolveSandboxDockerImage(cfg);
+  await handleMissingSandboxImage(
+    {
+      label: "base",
+      image: dockerImage,
+      buildScript:
+        dockerImage === DEFAULT_SANDBOX_COMMON_IMAGE
+          ? "scripts/sandbox-common-setup.sh"
+          : dockerImage === DEFAULT_SANDBOX_IMAGE
+            ? "scripts/sandbox-setup.sh"
+            : undefined,
+      updateConfig: (image) => {
+        next = updateSandboxDockerImage(next, image);
+        changes.push(`Updated agent.sandbox.docker.image → ${image}`);
+      },
+    },
+    runtime,
+  );
+
+  if (sandbox.browser?.enabled) {
+    await handleMissingSandboxImage(
+      {
+        label: "browser",
+        image: resolveSandboxBrowserImage(cfg),
+        buildScript: "scripts/sandbox-browser-setup.sh",
+        updateConfig: (image) => {
+          next = updateSandboxBrowserImage(next, image);
+          changes.push(`Updated agent.sandbox.browser.image → ${image}`);
+        },
+      },
+      runtime,
+    );
+  }
+
+  if (changes.length > 0) {
+    note(changes.join("\n"), "Doctor changes");
+  }
+
+  return next;
+}
+
+function normalizeLegacyConfigValues(cfg: ClawdisConfig): {
+  config: ClawdisConfig;
+  changes: string[];
+} {
+  const changes: string[] = [];
+  let next: ClawdisConfig = cfg;
+
+  const workspace = cfg.agent?.workspace;
+  const updatedWorkspace = replacePathSegment(
+    replacePathSegment(workspace, "clawdis", "clawdis"),
+    "clawd",
+    "clawdis",
+  );
+  if (updatedWorkspace && updatedWorkspace !== workspace) {
+    next = {
+      ...next,
+      agent: {
+        ...next.agent,
+        workspace: updatedWorkspace,
+      },
+    };
+    changes.push(`Updated agent.workspace → ${updatedWorkspace}`);
+  }
+
+  const workspaceRoot = cfg.agent?.sandbox?.workspaceRoot;
+  const updatedWorkspaceRoot = replacePathSegment(
+    replacePathSegment(workspaceRoot, "clawdis", "clawdis"),
+    "clawd",
+    "clawdis",
+  );
+  if (updatedWorkspaceRoot && updatedWorkspaceRoot !== workspaceRoot) {
+    next = {
+      ...next,
+      agent: {
+        ...next.agent,
+        sandbox: {
+          ...next.agent?.sandbox,
+          workspaceRoot: updatedWorkspaceRoot,
+        },
+      },
+    };
+    changes.push(
+      `Updated agent.sandbox.workspaceRoot → ${updatedWorkspaceRoot}`,
+    );
+  }
+
+  const dockerImage = cfg.agent?.sandbox?.docker?.image;
+  const updatedDockerImage = replaceLegacyName(dockerImage);
+  if (updatedDockerImage && updatedDockerImage !== dockerImage) {
+    next = {
+      ...next,
+      agent: {
+        ...next.agent,
+        sandbox: {
+          ...next.agent?.sandbox,
+          docker: {
+            ...next.agent?.sandbox?.docker,
+            image: updatedDockerImage,
+          },
+        },
+      },
+    };
+    changes.push(`Updated agent.sandbox.docker.image → ${updatedDockerImage}`);
+  }
+
+  const containerPrefix = cfg.agent?.sandbox?.docker?.containerPrefix;
+  const updatedContainerPrefix = replaceLegacyName(containerPrefix);
+  if (updatedContainerPrefix && updatedContainerPrefix !== containerPrefix) {
+    next = {
+      ...next,
+      agent: {
+        ...next.agent,
+        sandbox: {
+          ...next.agent?.sandbox,
+          docker: {
+            ...next.agent?.sandbox?.docker,
+            containerPrefix: updatedContainerPrefix,
+          },
+        },
+      },
+    };
+    changes.push(
+      `Updated agent.sandbox.docker.containerPrefix → ${updatedContainerPrefix}`,
+    );
+  }
+
+  return { config: next, changes };
+}
+
+async function maybeMigrateLegacyConfigFile(runtime: RuntimeEnv) {
+  const legacyConfigPath = resolveLegacyConfigPath(process.env);
+  if (legacyConfigPath === CONFIG_PATH_CLAWDIS) return;
+
+  const legacyIo = createConfigIO({ configPath: legacyConfigPath });
+  const legacySnapshot = await legacyIo.readConfigFileSnapshot();
+  if (!legacySnapshot.exists) return;
+
+  const currentSnapshot = await readConfigFileSnapshot();
+  if (currentSnapshot.exists) {
+    note(
+      `Legacy config still exists at ${legacyConfigPath}. Current config at ${CONFIG_PATH_CLAWDIS}.`,
+      "Legacy config",
+    );
+    return;
+  }
+
+  const gatewayMode =
+    typeof (legacySnapshot.parsed as ClawdisConfig)?.gateway?.mode === "string"
+      ? (legacySnapshot.parsed as ClawdisConfig).gateway?.mode
+      : undefined;
+  const gatewayBind =
+    typeof (legacySnapshot.parsed as ClawdisConfig)?.gateway?.bind === "string"
+      ? (legacySnapshot.parsed as ClawdisConfig).gateway?.bind
+      : undefined;
+  const agentWorkspace =
+    typeof (legacySnapshot.parsed as ClawdisConfig)?.agent?.workspace ===
+    "string"
+      ? (legacySnapshot.parsed as ClawdisConfig).agent?.workspace
+      : undefined;
+
+  note(
+    [
+      `- File exists at ${legacyConfigPath}`,
+      gatewayMode ? `- gateway.mode: ${gatewayMode}` : undefined,
+      gatewayBind ? `- gateway.bind: ${gatewayBind}` : undefined,
+      agentWorkspace ? `- agent.workspace: ${agentWorkspace}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    "Legacy Clawdis config detected",
+  );
+
+  let nextConfig = legacySnapshot.valid ? legacySnapshot.config : null;
+  const { config: migratedConfig, changes } = migrateLegacyConfig(
+    legacySnapshot.parsed,
+  );
+  if (migratedConfig) {
+    nextConfig = migratedConfig;
+  } else if (!nextConfig) {
+    note(
+      `Legacy config at ${legacyConfigPath} is invalid; skipping migration.`,
+      "Legacy config",
+    );
+    return;
+  }
+
+  const normalized = normalizeLegacyConfigValues(nextConfig);
+  const mergedChanges = [...changes, ...normalized.changes];
+  if (mergedChanges.length > 0) {
+    note(mergedChanges.join("\n"), "Doctor changes");
+  }
+
+  await writeConfigFile(normalized.config);
+  runtime.log(`Migrated legacy config to ${CONFIG_PATH_CLAWDIS}`);
+}
+
+async function maybeMigrateLegacyGatewayService(
+  cfg: ClawdisConfig,
+  runtime: RuntimeEnv,
+) {
+  const legacyServices = await findLegacyGatewayServices(process.env);
+  if (legacyServices.length === 0) return;
+
+  note(
+    legacyServices
+      .map((svc) => `- ${svc.label} (${svc.platform}, ${svc.detail})`)
+      .join("\n"),
+    "Legacy Clawdis services detected",
+  );
+
+  const migrate = guardCancel(
+    await confirm({
+      message: "Migrate legacy Clawdis services to Clawdis now?",
+      initialValue: true,
+    }),
+    runtime,
+  );
+  if (!migrate) return;
+
+  try {
+    await uninstallLegacyGatewayServices({
+      env: process.env,
+      stdout: process.stdout,
+    });
+  } catch (err) {
+    runtime.error(`Legacy service cleanup failed: ${String(err)}`);
+    return;
+  }
+
+  if (resolveIsNixMode(process.env)) {
+    note("Nix mode detected; skip installing services.", "Gateway");
+    return;
+  }
+
+  if (resolveMode(cfg) === "remote") {
+    note("Gateway mode is remote; skipped local service install.", "Gateway");
+    return;
+  }
+
+  const service = resolveGatewayService();
+  const loaded = await service.isLoaded({ env: process.env });
+  if (loaded) {
+    note(`Clawdis ${service.label} already ${service.loadedText}.`, "Gateway");
+    return;
+  }
+
+  const install = guardCancel(
+    await confirm({
+      message: "Install Clawdis gateway service now?",
+      initialValue: true,
+    }),
+    runtime,
+  );
+  if (!install) return;
+
+  const devMode =
+    process.argv[1]?.includes(`${path.sep}src${path.sep}`) &&
+    process.argv[1]?.endsWith(".ts");
+  const port = resolveGatewayPort(cfg, process.env);
+  const { programArguments, workingDirectory } =
+    await resolveGatewayProgramArguments({ port, dev: devMode });
+  const environment: Record<string, string | undefined> = {
+    PATH: process.env.PATH,
+    CLAWDIS_GATEWAY_TOKEN:
+      cfg.gateway?.auth?.token ?? process.env.CLAWDIS_GATEWAY_TOKEN,
+    CLAWDIS_LAUNCHD_LABEL:
+      process.platform === "darwin" ? GATEWAY_LAUNCH_AGENT_LABEL : undefined,
+  };
+  await service.install({
+    env: process.env,
+    stdout: process.stdout,
+    programArguments,
+    workingDirectory,
+    environment,
+  });
+}
+
+export async function doctorCommand(
+  runtime: RuntimeEnv = defaultRuntime,
+  options: DoctorOptions = {},
+) {
   printWizardHeader(runtime);
   intro("Clawdis doctor");
+
+  await maybeMigrateLegacyConfigFile(runtime);
 
   const snapshot = await readConfigFileSnapshot();
   let cfg: ClawdisConfig = snapshot.valid ? snapshot.config : {};
@@ -63,6 +632,38 @@ export async function doctorCommand(runtime: RuntimeEnv = defaultRuntime) {
       if (migrated) {
         cfg = migrated;
       }
+    }
+  }
+
+  const normalized = normalizeLegacyConfigValues(cfg);
+  if (normalized.changes.length > 0) {
+    note(normalized.changes.join("\n"), "Doctor changes");
+    cfg = normalized.config;
+  }
+
+  cfg = await maybeRepairSandboxImages(cfg, runtime);
+
+  await maybeMigrateLegacyGatewayService(cfg, runtime);
+
+  if (process.platform === "linux" && resolveMode(cfg) === "local") {
+    const service = resolveGatewayService();
+    let loaded = false;
+    try {
+      loaded = await service.isLoaded({ env: process.env });
+    } catch {
+      loaded = false;
+    }
+    if (loaded) {
+      await ensureSystemdUserLingerInteractive({
+        runtime,
+        prompter: {
+          confirm: async (p) => guardCancel(await confirm(p), runtime) === true,
+          note,
+        },
+        reason:
+          "Gateway runs as a systemd user service. Without lingering, systemd stops the user session on logout/idle and kills the Gateway.",
+        requireConfirm: true,
+      });
     }
   }
 
@@ -104,6 +705,12 @@ export async function doctorCommand(runtime: RuntimeEnv = defaultRuntime) {
     if (!loaded) {
       note("Gateway daemon not installed.", "Gateway");
     } else {
+      if (process.platform === "darwin") {
+        note(
+          `LaunchAgent loaded; stopping requires "clawdis gateway stop" or launchctl bootout gui/$UID/${GATEWAY_LAUNCH_AGENT_LABEL}.`,
+          "Gateway",
+        );
+      }
       const restart = guardCancel(
         await confirm({
           message: "Restart gateway daemon now?",
@@ -131,6 +738,15 @@ export async function doctorCommand(runtime: RuntimeEnv = defaultRuntime) {
   cfg = applyWizardMetadata(cfg, { command: "doctor", mode: resolveMode(cfg) });
   await writeConfigFile(cfg);
   runtime.log(`Updated ${CONFIG_PATH_CLAWDIS}`);
+
+  if (options.workspaceSuggestions !== false) {
+    const workspaceDir = resolveUserPath(
+      cfg.agent?.workspace ?? DEFAULT_WORKSPACE,
+    );
+    if (await shouldSuggestMemorySystem(workspaceDir)) {
+      note(MEMORY_SYSTEM_PROMPT, "Workspace");
+    }
+  }
 
   outro("Doctor complete.");
 }

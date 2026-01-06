@@ -1,555 +1,86 @@
-# CLAUDE.md
+# Repository Guidelines
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Project Structure & Module Organization
+- Source code: `src/` (CLI wiring in `src/cli`, commands in `src/commands`, web provider in `src/provider-web.ts`, infra in `src/infra`, media pipeline in `src/media`).
+- Tests: colocated `*.test.ts`.
+- Docs: `docs/` (images, queue, Pi config). Built output lives in `dist/`.
 
-## What is Clawdis?
+## Build, Test, and Development Commands
+- Install deps: `pnpm install`
+- Prefer Bun for TypeScript execution (scripts, dev, tests): `bun <file.ts>` / `bunx <tool>`.
+- Run CLI in dev: `pnpm clawdis ...` (bun) or `pnpm dev`.
+- Node remains supported for running built output (`dist/*`) and production installs.
+- Type-check/build: `pnpm build` (tsc)
+- Lint/format: `pnpm lint` (biome check), `pnpm format` (biome format)
+- Tests: `pnpm test` (vitest); coverage: `pnpm test:coverage`
 
-A personal AI assistant platform with multi-surface messaging (WhatsApp, Telegram, Discord, iMessage), voice wake, and a Canvas UI. The Gateway is the control plane; companion apps (macOS, iOS, Android) connect as nodes.
+## Coding Style & Naming Conventions
+- Language: TypeScript (ESM). Prefer strict typing; avoid `any`.
+- Formatting/linting via Biome; run `pnpm lint` before commits.
+- Keep files concise; extract helpers instead of “V2” copies. Use existing patterns for CLI options and dependency injection via `createDefaultDeps`.
+- Aim to keep files under ~700 LOC; guideline only (not a hard guardrail). Split/refactor when it improves clarity or testability.
 
-## Build & Development
+## Testing Guidelines
+- Framework: Vitest with V8 coverage thresholds (70% lines/branches/functions/statements).
+- Naming: match source names with `*.test.ts`; e2e in `*.e2e.test.ts`.
+- Run `pnpm test` (or `pnpm test:coverage`) before pushing when you touch logic.
+- Pure test additions/fixes generally do **not** need a changelog entry unless they alter user-facing behavior or the user asks for one.
+- Mobile: before using a simulator, check for connected real devices (iOS + Android) and prefer them when available.
 
-```bash
-pnpm install           # Install deps
-pnpm build             # TypeScript build (tsc)
-pnpm clawdis ...       # Run CLI in dev mode (tsx)
-pnpm gateway:watch     # Auto-reload gateway on TS changes
-```
+## Commit & Pull Request Guidelines
+- Create commits with `scripts/committer "<msg>" <file...>`; avoid manual `git add`/`git commit` so staging stays scoped.
+- Follow concise, action-oriented commit messages (e.g., `CLI: add verbose flag to send`).
+- Group related changes; avoid bundling unrelated refactors.
+- PRs should summarize scope, note testing performed, and mention any user-facing changes or new flags.
+- When working on a PR: add a changelog entry with the PR ID and thank the contributor.
+- When working on an issue: reference the issue in the changelog entry.
+- When merging a PR: leave a PR comment that explains exactly what we did.
+- When merging a PR from a new contributor: add their avatar to the README “Thanks to all clawtributors” thumbnail list.
 
-### Common Commands
+## Security & Configuration Tips
+- Web provider stores creds at `~/.clawdis/credentials/`; rerun `clawdis login` if logged out.
+- Pi sessions live under `~/.clawdis/sessions/` by default; the base directory is not configurable.
+- Never commit or publish real phone numbers, videos, or live configuration values. Use obviously fake placeholders in docs, tests, and examples.
 
-| Command | Purpose |
-|---------|---------|
-| `pnpm clawdis gateway --port 18789` | Start gateway |
-| `pnpm clawdis login` | Link WhatsApp |
-| `pnpm clawdis send --to +1234 --message "Hi"` | Send message |
-| `pnpm clawdis agent --message "..." --thinking high` | Run agent |
-| `pnpm clawdis onboard` | Setup wizard |
+## Agent-Specific Notes
+- Gateway currently runs only as the menubar app (launchctl shows `application.com.steipete.clawdis.debug.*`), there is no separate LaunchAgent/helper label installed. Restart via the Clawdis Mac app or `scripts/restart-mac.sh`; to verify/kill use `launchctl print gui/$UID | grep clawdis` rather than expecting `com.steipete.clawdis`. **When debugging on macOS, start/stop the gateway via the app, not ad-hoc tmux sessions; kill any temporary tunnels before handoff.**
+- macOS logs: use `./scripts/clawlog.sh` (aka `vtlog`) to query unified logs for subsystem `com.steipete.clawdis`; it supports follow/tail/category filters and expects passwordless sudo for `/usr/bin/log`.
+- Also read the shared guardrails at `~/Projects/oracle/AGENTS.md` and `~/Projects/agent-scripts/AGENTS.MD` before making changes; align with any cross-repo rules noted there.
+- SwiftUI state management (iOS/macOS): prefer the `Observation` framework (`@Observable`, `@Bindable`) over `ObservableObject`/`@StateObject`; don’t introduce new `ObservableObject` unless required for compatibility, and migrate existing usages when touching related code.
+- Connection providers: when adding a new connection, update every UI surface and docs (macOS app, web UI, mobile if applicable, onboarding/overview docs) and add matching status + configuration forms so provider lists and settings stay in sync.
+- **Restart apps:** “restart iOS/Android apps” means rebuild (recompile/install) and relaunch, not just kill/launch.
+- **Device checks:** before testing, verify connected real devices (iOS/Android) before reaching for simulators/emulators.
+- iOS Team ID lookup: `security find-identity -p codesigning -v` → use Apple Development (…) TEAMID. Fallback: `defaults read com.apple.dt.Xcode IDEProvisioningTeamIdentifiers`.
+- A2UI bundle hash: `src/canvas-host/a2ui/.bundle.hash` is auto-generated; ignore unexpected changes, and only regenerate via `pnpm canvas:a2ui:bundle` (or `scripts/bundle-a2ui.sh`) when needed. Commit the hash as a separate commit.
+- Notary key file lives at `~/Library/CloudStorage/Dropbox/Backup/AppStore/AuthKey_NJF3NFGTS3.p8` (Sparkle keys live under `~/Library/CloudStorage/Dropbox/Backup/Sparkle`).
+- Notary auth env vars (`APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_API_KEY_P8`) are in `~/.profile`.
+- **Multi-agent safety:** do **not** create/apply/drop `git stash` entries unless Peter explicitly asks (this includes `git pull --rebase --autostash`). Assume other agents may be working; keep unrelated WIP untouched and avoid cross-cutting state changes.
+- **Multi-agent safety:** when Peter says "push", you may `git pull --rebase` to integrate latest changes (never discard other agents' work). When Peter says "commit", scope to your changes only. When Peter says "commit all", commit everything in grouped chunks.
+- **Multi-agent safety:** do **not** create/remove/modify `git worktree` checkouts (or edit `.worktrees/*`) unless Peter explicitly asks.
+- **Multi-agent safety:** do **not** switch branches / check out a different branch unless Peter explicitly asks.
+- **Multi-agent safety:** running multiple agents is OK as long as each agent has its own session.
+- **Multi-agent safety:** when you see unrecognized files, keep going; focus on your changes and commit only those.
+- When asked to open a “session” file, open the Pi session logs under `~/.clawdis/sessions/*.jsonl` (newest unless a specific ID is given), not the default `sessions.json`. If logs are needed from Mac Studio, SSH via Tailscale and read the same path there.
+- Menubar dimming + restart flow mirrors Trimmy: use `scripts/restart-mac.sh` (kills all Clawdis variants, runs `swift build`, packages, relaunches). Icon dimming depends on MenuBarExtraAccess wiring in AppMain; keep `appearsDisabled` updates intact when touching the status item.
+- Do not rebuild the macOS app over SSH; rebuilds must be run directly on the Mac.
+- Never send streaming/partial replies to external messaging surfaces (WhatsApp, Telegram); only final replies should be delivered there. Streaming/tool events may still go to internal UIs/control channel.
+- Voice wake forwarding tips:
+  - Command template should stay `clawdis-mac agent --message "${text}" --thinking low`; `VoiceWakeForwarder` already shell-escapes `${text}`. Don’t add extra quotes.
+  - launchd PATH is minimal; ensure the app’s launch agent sets PATH to include `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/steipete/Library/pnpm` so `pnpm`/`clawdis` binaries resolve when invoked via `clawdis-mac`.
+  - For manual `clawdis send` messages that include `!`, use the heredoc pattern noted below to avoid the Bash tool’s escaping.
 
-### Testing & Quality
-
-```bash
-pnpm test              # Vitest (colocated *.test.ts)
-pnpm test:coverage     # With V8 coverage (70% thresholds)
-pnpm lint              # Biome check + oxlint
-pnpm lint:fix          # Auto-fix lint issues
-pnpm format            # Biome format
-```
-
-### Protocol & A2UI
-
-```bash
-pnpm protocol:gen         # Generate JSON Schema from TypeBox
-pnpm protocol:gen:swift   # Generate Swift models
-pnpm canvas:a2ui:bundle   # Regenerate A2UI bundle
-```
-
-## Architecture
-
-### Source Layout
-
-| Directory | Purpose |
-|-----------|---------|
-| `src/gateway/` | WebSocket server (single source of truth) |
-| `src/cli/` | Commander-based CLI wiring |
-| `src/commands/` | CLI command implementations |
-| `src/infra/` | Infrastructure (bridge, presence, sessions, mcp, hooks) |
-| `src/infra/mcp/` | MCP client and server registry |
-| `src/infra/hooks/` | Agent lifecycle hook runner |
-| `src/agents/` | Pi agent integration, tools, configs |
-| `src/media/` | Media processing pipeline |
-| `src/telegram/` | Telegram provider (grammY) |
-| `src/discord/` | Discord provider (discord.js) |
-| `src/web/` | WhatsApp web provider (Baileys) |
-| `apps/macos/` | macOS menubar app (Swift) |
-| `apps/ios/` | iOS node app (Swift) |
-| `apps/android/` | Android node app |
-
-### Gateway Protocol
-
-- **Transport**: WebSocket on `ws://127.0.0.1:18789`
-- **First frame must be `connect`**; AJV validates all frames against TypeBox schemas
-- **Methods**: `send`, `agent`, `chat.*`, `sessions.*`, `config.*`, `cron.*`, `node.*`
-- **Events**: `agent`, `chat`, `presence`, `tick`, `health`, `heartbeat`, `shutdown`
-- **Idempotency keys required** for side-effecting methods (`send`, `agent`)
-
-### Node Bridge
-
-Optional TCP bridge (`src/infra/bridge/`) for iOS/Android nodes:
-- Newline-delimited JSON frames
-- Pairing flow with tokens
-- Capabilities: canvas, screen, camera, voiceWake
-
-### MCP Server Integration
-
-Clawdis supports Model Context Protocol (MCP) servers for external tool integrations.
-
-| File | Purpose |
-|------|---------|
-| `src/infra/mcp/client.ts` | JSON-RPC over stdio client |
-| `src/infra/mcp/registry.ts` | Server lifecycle (on-demand spawn, caching, shutdown) |
-| `src/agents/mcp-tools.ts` | MCP → AgentTool adapter |
-
-**Configuration** (`~/.clawdis/clawdis.json`):
-```json
-{
-  "mcp": {
-    "enabled": true,
-    "servers": {
-      "exa": {
-        "command": "uvx",
-        "args": ["mcp-exa"],
-        "env": { "EXA_API_KEY": "..." }
-      }
-    }
-  }
-}
-```
-
-MCP tools appear as `mcp__<server>__<tool>` (e.g., `mcp__exa__web_search`).
-
-### Agent Hooks
-
-Lifecycle hooks for observability and validation at various points in agent execution.
-
-| Hook | Timing | Can Block |
-|------|--------|-----------|
-| `PreToolUse` | Before tool execution | Yes (non-zero exit) |
-| `PostToolUse` | After tool execution | No |
-| `PostAgentTurn` | After agent turn completes | No |
-| `SessionEnd` | When session ends | No |
-
-**Configuration** (`~/.clawdis/clawdis.json`):
-```json
-{
-  "agentHooks": {
-    "enabled": true,
-    "PreToolUse": [
-      {
-        "matcher": "bash",
-        "type": "command",
-        "command": "scripts/validate-bash.sh",
-        "timeoutMs": 5000
-      }
-    ]
-  }
-}
-```
-
-Hooks receive context via environment variables: `HOOK_TOOL_NAME`, `HOOK_TOOL_ARGS`, `HOOK_SESSION_KEY`.
-
-### Subagent Delegation
-
-The `spawn_agent` tool creates isolated agent sessions for specific task types.
-
-| Agent Type | Purpose |
-|------------|---------|
-| `explore` | Codebase analysis, information gathering |
-| `plan` | Implementation planning, architecture design |
-| `code-review` | Code quality, bugs, best practices |
-| `research` | Web/documentation research |
-| `test` | Run tests, analyze results |
-
-Subagents run in isolated contexts with their own session files (cleaned up automatically).
-
-## Code Patterns
-
-### Dependency Injection
-
-Use `createDefaultDeps()` pattern for testable components. CLI options follow existing command patterns.
-
-### TypeScript
-
-- ESM modules, strict typing, avoid `any`
-- Biome for formatting/linting
-- Files ~700 LOC guideline (not hard limit)
-
-### Testing
-
-- Vitest with V8 coverage
-- Colocated `*.test.ts` files; e2e as `*.e2e.test.ts`
-- Mobile: prefer real devices over simulators
-
-## Commit Workflow
+## Exclamation Mark Escaping Workaround
+The Claude Code Bash tool escapes `!` to `\\!` in command arguments. When using `clawdis send` with messages containing exclamation marks, use heredoc syntax:
 
 ```bash
-scripts/committer "<msg>" <file...>   # Scoped commits
-```
+# WRONG - will send "Hello\\!" with backslash
+clawdis send --to "+1234" --message 'Hello!'
 
-Avoid manual `git add`/`git commit` to keep staging scoped.
-
-## Configuration
-
-- Config: `~/.clawdis/clawdis.json`
-- Credentials: `~/.clawdis/credentials/`
-- Sessions: `~/.clawdis/sessions/`
-- Workspace: `~/clawd/` (agent skills, AGENTS.md, SOUL.md)
-
-## macOS App
-
-```bash
-./scripts/restart-mac.sh    # Build + package + relaunch
-./scripts/clawlog.sh        # Query unified logs (subsystem com.steipete.clawdis)
-```
-
-SwiftUI: prefer `@Observable`/`@Bindable` (Observation framework) over `ObservableObject`/`@StateObject`.
-
-## Key Documentation
-
-- [`docs/architecture.md`](docs/architecture.md) - Gateway architecture
-- [`docs/gateway.md`](docs/gateway.md) - Gateway details
-- [`docs/configuration.md`](docs/configuration.md) - Config reference
-- [`docs/agent.md`](docs/agent.md) - Agent runtime
-- [`docs/RELEASING.md`](docs/RELEASING.md) - Release checklist
-
-## Claude Code Workaround
-
-The Bash tool escapes `!` to `\\!`. Use heredoc for messages with exclamation marks:
-
-```bash
+# CORRECT - use heredoc to avoid escaping
 clawdis send --to "+1234" --message "$(cat <<'EOF'
 Hello!
 EOF
 )"
 ```
 
-## Known Gotchas
-
-### Swift 6.2 Runtime Libraries
-
-SwiftPM builds don't automatically bundle Swift compatibility libraries. When the app fails to launch with `dyld: Library not loaded: @rpath/libswiftCompatibilitySpan.dylib`, the packaging script needs to copy it:
-
-```bash
-# Already handled in scripts/package-mac-app.sh
-cp /Applications/Xcode.app/.../lib/swift-6.2/macosx/libswiftCompatibilitySpan.dylib \
-   "$APP_ROOT/Contents/Frameworks/"
-```
-
-When upgrading Swift/Xcode, check for new compatibility libraries.
-
-### Gateway Token: CLI vs App Mismatch
-
-| Component | Token Source |
-|-----------|--------------|
-| CLI (`clawdis health`) | `~/.clawdis/clawdis.json` → `gateway.remote.token` |
-| macOS App | `CLAWDIS_GATEWAY_TOKEN` env var only |
-
-If the app shows "unauthorized" but CLI works, set the env var:
-
-```bash
-launchctl setenv CLAWDIS_GATEWAY_TOKEN "your-token"
-# Then restart the app
-```
-
-For persistence, create `~/Library/LaunchAgents/com.*.clawdis.env.plist` with `RunAtLoad`.
-
-### macOS GUI Apps Don't Inherit Shell Environment
-
-Apps launched from Finder/Spotlight don't see `~/.zshrc` exports. Use:
-- `launchctl setenv VAR value` (immediate, current session)
-- LaunchAgent with `RunAtLoad` (persistent across reboots)
-
-### VPS Gateway Deployment (Recommended)
-
-Deploy the gateway to an always-on VPS for 24/7 availability across all devices.
-
-**Current Production Setup** (srv1209224.hstgr.cloud):
-
-| Component | Value |
-|-----------|-------|
-| Dashboard | `https://srv1209224.tail7248b9.ts.net/` (Tailscale Serve) |
-| VPS IP | `62.72.20.190` (public) |
-| Tailscale IP | `100.88.241.49` |
-| Gateway port | `18789` |
-| Token | `bb47aa7622ad277ac8480a562ecc74e84b246d145514c56a` |
-| Service | `systemctl status clawdis-gateway` |
-| Logs | `journalctl -u clawdis-gateway -f` |
-| Config | `/home/clawdis/.clawdis/clawdis.json` |
-| Environment | `/home/clawdis/.clawdis/env` |
-
-**VPS Gateway Config** (`/home/clawdis/.clawdis/clawdis.json`):
-```json
-{
-  "gateway": {
-    "mode": "local",
-    "bind": "tailnet",
-    "auth": { "mode": "token", "token": "...", "allowTailscale": true }
-  },
-  "agent": { "workspace": "/home/clawdis/clawd", "model": "anthropic/claude-sonnet-4-20250514" },
-  "mcp": { "enabled": true, "servers": { "exa": { "command": "npx", "args": ["..."] } } },
-  "web": { "enabled": true, "heartbeatSeconds": 60 },
-  "whatsapp": { "enabled": true, "allowFrom": ["+46761403574", "+46791422723"] },
-  "telegram": { "enabled": true, "botToken": "..." },
-  "discord": { "enabled": true },
-  "logging": { "file": "/var/log/clawdis/clawdis.log", "consoleLevel": "info" }
-}
-```
-
-**VPS Management Commands**:
-```bash
-# Status
-ssh root@srv1209224.hstgr.cloud "systemctl status clawdis-gateway"
-
-# Logs
-ssh root@srv1209224.hstgr.cloud "journalctl -u clawdis-gateway -f"
-
-# Restart
-ssh root@srv1209224.hstgr.cloud "systemctl restart clawdis-gateway"
-
-# Update deployment
-pnpm build && tar -czvf /tmp/clawdis-deploy.tar.gz dist/ node_modules/ package.json
-scp /tmp/clawdis-deploy.tar.gz root@srv1209224.hstgr.cloud:/tmp/
-ssh root@srv1209224.hstgr.cloud "cd /opt/clawdis && tar -xzf /tmp/clawdis-deploy.tar.gz && systemctl restart clawdis-gateway"
-```
-
-### VPS Workspace & MCP Servers
-
-The VPS agent workspace is at `/home/clawdis/clawd/` with skills synced from local.
-
-**MCP Servers** (configured in VPS clawdis.json):
-| Server | Type | Purpose |
-|--------|------|---------|
-| exa | stdio (npx) | Web search, code context, research |
-
-**Workspace Sync**:
-```bash
-# Manual sync
-./scripts/sync-workspace-to-vps.sh
-
-# Auto sync (runs daily at 6 AM, also on ~/clawd/skills changes)
-# Configured via: ~/Library/LaunchAgents/com.clawdis.workspace-sync.plist
-launchctl list | grep clawdis.workspace-sync
-```
-
-**What gets synced**:
-- `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `USER.md`, `IDENTITY.md`
-- `skills/` (diary, persistent-memory, capture-learning, feedback)
-- `canvas/`
-- Symlinks are resolved to actual content
-
-### Provider Setup (WhatsApp, Telegram, Discord)
-
-#### Current Provider Status
-
-| Provider | Account | Config Key |
-|----------|---------|------------|
-| WhatsApp | +46761403574 | `whatsapp.enabled` |
-| Telegram | @Clarpbot | `telegram.botToken` |
-| Discord | Clawdis#6252 | `discord.enabled` |
-
-#### WhatsApp Setup (Baileys)
-
-WhatsApp uses QR code linking via Baileys library. **QR codes expire in ~20 seconds**.
-
-**To link a new WhatsApp number:**
-
-```bash
-# 1. Clear existing credentials (forces new QR)
-ssh root@srv1209224.hstgr.cloud "rm -rf /home/clawdis/.clawdis/credentials/whatsapp-* && chown -R clawdis:clawdis /home/clawdis/.clawdis/credentials"
-
-# 2. Create QR generator script on VPS
-ssh root@srv1209224.hstgr.cloud 'cat > /tmp/generate-qr.mjs << '\''EOF'\''
-import { writeFileSync } from "node:fs";
-const { createWaSocket } = await import("/opt/clawdis/dist/web/session.js");
-const { renderQrPngBase64 } = await import("/opt/clawdis/dist/web/qr-image.js");
-
-console.log("Starting WhatsApp connection to get QR...");
-let qrReceived = false;
-
-const sock = await createWaSocket(false, false, {
-  onQr: async (qr) => {
-    if (qrReceived) return;
-    qrReceived = true;
-    console.log("QR received, generating PNG...");
-    const base64 = await renderQrPngBase64(qr);
-    writeFileSync("/tmp/whatsapp-qr.png", Buffer.from(base64, "base64"));
-    console.log("QR_SAVED:/tmp/whatsapp-qr.png");
-    console.log("Waiting 2 minutes for you to scan...");
-  }
-});
-
-sock.ev.on("connection.update", (update) => {
-  if (update.connection === "open") {
-    console.log("SUCCESS: WhatsApp connected!");
-    setTimeout(() => process.exit(0), 1000);
-  }
-});
-EOF'
-
-# 3. Run script and download QR (must be quick - QR expires!)
-ssh root@srv1209224.hstgr.cloud "cd /opt/clawdis && sudo -u clawdis node /tmp/generate-qr.mjs &"
-sleep 5
-scp root@srv1209224.hstgr.cloud:/tmp/whatsapp-qr.png /tmp/whatsapp-qr.png
-open /tmp/whatsapp-qr.png  # Scan immediately!
-
-# 4. After successful scan, restart gateway
-ssh root@srv1209224.hstgr.cloud "systemctl restart clawdis-gateway"
-```
-
-**WhatsApp Error Codes:**
-
-| Error | Meaning | Fix |
-|-------|---------|-----|
-| `status=515` | Pairing successful, restart required | `systemctl restart clawdis-gateway` |
-| `Timed out waiting for QR` | QR expired before scan | Generate new QR, scan faster |
-| `Connection Closed` | Session invalidated | Clear credentials, re-link |
-
-**WhatsApp Allowlist:**
-
-Only process messages from specific numbers:
-
-```json
-{
-  "whatsapp": {
-    "enabled": true,
-    "allowFrom": ["+46761403574", "+46791422723"]
-  }
-}
-```
-
-#### Telegram Setup (grammY)
-
-Telegram uses Bot API - no phone verification needed, just a bot token from @BotFather.
-
-```bash
-# 1. Create bot via @BotFather in Telegram
-# 2. Copy the token (format: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz)
-# 3. Add to config
-ssh root@srv1209224.hstgr.cloud 'python3 << EOF
-import json
-with open("/home/clawdis/.clawdis/clawdis.json", "r") as f:
-    cfg = json.load(f)
-cfg["telegram"] = {"enabled": True, "botToken": "YOUR_BOT_TOKEN"}
-with open("/home/clawdis/.clawdis/clawdis.json", "w") as f:
-    json.dump(cfg, f, indent=2)
-EOF'
-
-# 4. Restart gateway
-ssh root@srv1209224.hstgr.cloud "systemctl restart clawdis-gateway"
-```
-
-#### VPS Config File Management
-
-**IMPORTANT**: Never use `scp` to transfer JSON config files - it can truncate them!
-
-```bash
-# BAD - scp can truncate files
-scp config.json root@vps:/path/config.json  # DON'T DO THIS
-
-# GOOD - pipe method preserves content
-cat config.json | ssh root@vps "cat > /path/config.json"
-
-# GOOD - Python for safe JSON updates
-ssh root@vps 'python3 << EOF
-import json
-with open("/home/clawdis/.clawdis/clawdis.json", "r") as f:
-    cfg = json.load(f)
-cfg["whatsapp"]["allowFrom"].append("+46791422723")
-with open("/home/clawdis/.clawdis/clawdis.json", "w") as f:
-    json.dump(cfg, f, indent=2)
-EOF'
-```
-
-#### Provider Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `Timed out waiting for WhatsApp QR` | QR expired (~20s lifetime) | Generate PNG, download fast, scan immediately |
-| `status=515 Unknown Stream Errored` | WhatsApp pairing succeeded | Just restart: `systemctl restart clawdis-gateway` |
-| WhatsApp credentials not saving | Root owns credentials dir | `chown -R clawdis:clawdis ~/.clawdis/` |
-| Telegram bot not responding | Missing/invalid token | Get new token from @BotFather |
-| Config file corrupted after scp | scp truncation bug | Use pipe: `cat file \| ssh ... "cat > file"` |
-| Messages not processed | Number not in allowFrom | Add E.164 format: `"+46791422723"` |
-
-#### VPS Permission Issues
-
-The `clawdis` user must own credential directories:
-
-```bash
-# Fix ownership if credentials fail to save
-ssh root@srv1209224.hstgr.cloud "chown -R clawdis:clawdis /home/clawdis/.clawdis/"
-
-# Verify
-ssh root@srv1209224.hstgr.cloud "ls -la /home/clawdis/.clawdis/"
-```
-
-### Client Configuration (bigmac/minimac)
-
-For Macs connecting to the VPS gateway:
-
-**CLI Config** (`~/.clawdis/clawdis.json`):
-```json
-{
-  "gateway": {
-    "mode": "remote",
-    "remote": {
-      "url": "ws://100.88.241.49:18789",
-      "token": "bb47aa7622ad277ac8480a562ecc74e84b246d145514c56a"
-    }
-  }
-}
-```
-
-**macOS App**: The app's "Remote over SSH" mode expects SSH tunneling. For direct Tailscale access:
-1. Set app to "Not configured" mode (don't run local gateway)
-2. Access dashboard via Tailscale Serve: `https://srv1209224.tail7248b9.ts.net/`
-3. CLI commands work via the config above
-
-**Environment Variable** (for CLI):
-```bash
-launchctl setenv CLAWDIS_GATEWAY_TOKEN "bb47aa7622ad277ac8480a562ecc74e84b246d145514c56a"
-```
-
-### Legacy: Remote Gateway with SSH Tunnel
-
-For SSH-tunnel based remote access (when not using VPS):
-
-1. **Gateway host (e.g., minimac)**:
-   - Gateway running with `gateway.auth.token` in config
-   - `gateway.bind: "lan"` or `"tailnet"` (not `"loopback"`)
-   - Note the token value from `~/.clawdis/clawdis.json`
-
-2. **Client Mac**:
-   - SSH key in agent: `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`
-   - SSH key authorized on remote: `ssh-copy-id <user>@<host>`
-   - `CLAWDIS_GATEWAY_TOKEN` env var set: `launchctl setenv CLAWDIS_GATEWAY_TOKEN "<token>"`
-   - Restart app after setting env var (Cmd+Q, reopen)
-
-### Remote Gateway Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `Permission denied (publickey)` | Wrong SSH username | Check `whoami` on remote - usernames may differ! |
-| `Permission denied` after adding key | Wrong permissions on remote | `chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys` |
-| `Permission denied` with key in agent | Key not in remote's authorized_keys | `ssh-copy-id <user>@<host>` (will prompt for password) |
-| `unauthorized` at WebSocket | Token mismatch | Set `CLAWDIS_GATEWAY_TOKEN` env var to match gateway's token |
-| `unauthorized` after setting token | App not restarted | Quit (Cmd+Q) and relaunch - GUI apps need restart for env vars |
-| Connection refused at 127.0.0.1 | SSH tunnel not establishing | Check SSH target username and identity file path in app settings |
-| Intermittent DNS failures | mDNS unreliable | Use Tailscale IP (e.g., `100.x.x.x`) instead of `.local` hostname |
-| "Gateway not configured" despite defaults set | Debug build uses different plist | Set `defaults write com.steipete.clawdis.debug "clawdis.connectionMode" "remote"` |
-| SSH tunnel "connect failed: Connection refused" | VPS gateway not on 127.0.0.1 | Check systemd ExecStart for `--bind tailnet`, change to `--bind lan` |
-| Settings in plist ignored | Systemd CLI args override config | Edit `/etc/systemd/system/clawdis-gateway.service`, then `systemctl daemon-reload` |
-
-### Remote Mode: Complete Setup Example
-
-```bash
-# 1. On CLIENT: Add SSH key to agent
-ssh-add --apple-use-keychain ~/.ssh/id_ed25519
-
-# 2. On CLIENT: Copy key to gateway (will prompt for password)
-ssh-copy-id minimac@100.94.223.25  # Use Tailscale IP!
-
-# 3. On CLIENT: Verify SSH works
-ssh minimac@100.94.223.25 echo ok
-
-# 4. On CLIENT: Get token from gateway
-ssh minimac@100.94.223.25 "grep token ~/.clawdis/clawdis.json"
-
-# 5. On CLIENT: Set token for GUI app
-launchctl setenv CLAWDIS_GATEWAY_TOKEN "bb47aa7622ad277ac8480a562ecc74e84b246d145514c56a"
-
-# 6. Restart Clawdis app (Cmd+Q, reopen)
-
-# 7. In app settings:
-#    - SSH: minimac@100.94.223.25 (correct user + Tailscale IP)
-#    - Identity file: /Users/bigmac/.ssh/id_ed25519 (your actual path)
-```
+This is a Claude Code quirk, not a clawdis bug.
