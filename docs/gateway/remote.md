@@ -43,6 +43,18 @@ With the tunnel up:
 
 Note: replace `18789` with your configured `gateway.port` (or `--port`/`CLAWDBOT_GATEWAY_PORT`).
 
+### Best practices (avoid flaky tunnels)
+
+- Bind the local end to IPv4 explicitly if your OS prefers IPv6:
+  `ssh -4 -N -L 127.0.0.1:18789:127.0.0.1:18789 user@host`
+- Make the tunnel fail fast if the forward can’t bind:
+  `-o ExitOnForwardFailure=yes`
+- Keep idle tunnels healthy:
+  `-o ServerAliveInterval=30 -o ServerAliveCountMax=3`
+- If something is already listening on your local `18789`, stop the local gateway or change the port.
+
+Runbook: [SSH tunnel setup for Clawdbot.app](/gateway/remote-gateway-readme)
+
 ## CLI remote defaults
 
 You can persist a remote target so CLI commands use it by default:

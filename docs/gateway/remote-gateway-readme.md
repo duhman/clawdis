@@ -39,8 +39,12 @@ Edit `~/.ssh/config` and add:
 Host remote-gateway
     HostName <REMOTE_IP>          # e.g., 172.27.187.184
     User <REMOTE_USER>            # e.g., jefferson
-    LocalForward 18789 127.0.0.1:18789
+    AddressFamily inet
+    LocalForward 127.0.0.1:18789 127.0.0.1:18789
     IdentityFile ~/.ssh/id_rsa
+    IdentitiesOnly yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
 ```
 
 Replace `<REMOTE_IP>` and `<REMOTE_USER>` with your values.
@@ -95,12 +99,22 @@ Save this as `~/Library/LaunchAgents/com.clawdbot.ssh-tunnel.plist`:
     <array>
         <string>/usr/bin/ssh</string>
         <string>-N</string>
+        <string>-o</string>
+        <string>ExitOnForwardFailure=yes</string>
+        <string>-o</string>
+        <string>ServerAliveInterval=30</string>
+        <string>-o</string>
+        <string>ServerAliveCountMax=3</string>
         <string>remote-gateway</string>
     </array>
     <key>KeepAlive</key>
     <true/>
     <key>RunAtLoad</key>
     <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/com.clawdbot.ssh-tunnel.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.clawdbot.ssh-tunnel.err.log</string>
 </dict>
 </plist>
 ```
@@ -115,6 +129,9 @@ The tunnel will now:
 - Start automatically when you log in
 - Restart if it crashes
 - Keep running in the background
+
+If the tunnel fails to start, check the logs in `/tmp/com.clawdbot.ssh-tunnel.err.log`
+and confirm nothing else is listening on `127.0.0.1:18789`.
 
 ---
 
