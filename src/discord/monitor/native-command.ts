@@ -118,13 +118,13 @@ function readDiscordCommandArgs(
   if (!definitions || definitions.length === 0) return undefined;
   const values: CommandArgValues = {};
   for (const definition of definitions) {
-    let value: unknown;
+    let value: string | number | boolean | null | undefined;
     if (definition.type === "number") {
-      value = interaction.options.getNumber(definition.name);
+      value = interaction.options.getNumber(definition.name) ?? null;
     } else if (definition.type === "boolean") {
-      value = interaction.options.getBoolean(definition.name);
+      value = interaction.options.getBoolean(definition.name) ?? null;
     } else {
-      value = interaction.options.getString(definition.name);
+      value = interaction.options.getString(definition.name) ?? null;
     }
     if (value != null) {
       values[definition.name] = value;
@@ -448,6 +448,7 @@ async function dispatchDiscordCommandInteraction(params: {
     const channelAllowed = channelConfig?.allowed !== false;
     const allowByPolicy = isDiscordGroupAllowedByPolicy({
       groupPolicy: discordConfig?.groupPolicy ?? "open",
+      guildAllowlisted: Boolean(guildInfo),
       channelAllowlistConfigured,
       channelAllowed,
     });
