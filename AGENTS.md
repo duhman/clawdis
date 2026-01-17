@@ -9,6 +9,30 @@
 - Plugins/extensions: live under `extensions/*` (workspace packages). Keep plugin-only deps in the extension `package.json`; do not add them to the root `package.json` unless core uses them.
 - Installers served from `https://clawd.bot/*`: live in the sibling repo `../clawd.bot` (`public/install.sh`, `public/install-cli.sh`, `public/install.ps1`).
 
+## Clawdis (Tauri Desktop App)
+The `apps/clawdis/` directory contains a native macOS AI assistant built with Tauri v2, React, and TypeScript.
+
+| Feature | Description |
+|---------|-------------|
+| Chat | Streaming chat with thinking levels via Gateway |
+| Search | LanceDB hybrid search (vector + FTS) |
+| Launcher | Quick command palette (Cmd+Shift+Space) |
+| Voice | Push-to-talk with Web Speech API |
+| Raycast | Extension in `apps/clawdis/extensions/raycast/` |
+
+**Commands:**
+```bash
+cd apps/clawdis
+pnpm tauri dev      # Development
+pnpm tauri build    # Build .app + .dmg
+pnpm test           # Run tests
+```
+
+**Documentation:**
+- `apps/clawdis/README.md` - User guide
+- `apps/clawdis/docs/ARCHITECTURE.md` - Technical architecture
+- `apps/clawdis/CLAUDE.md` - Claude Code guidance
+
 ## Docs Linking (Mintlify)
 - Docs are hosted on Mintlify (docs.clawd.bot).
 - Internal doc links in `docs/**/*.md`: root-relative, no `.md`/`.mdx` (example: `[Config](/configuration)`).

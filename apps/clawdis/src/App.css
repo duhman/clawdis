@@ -1,0 +1,134 @@
+:root {
+  font-family:
+    Inter,
+    Avenir,
+    Helvetica,
+    Arial,
+    sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #f6f6f6;
+  background-color: #0f0f0f;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+}
+
+.app-header__left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-header__toggle-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #888);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.app-header__toggle-btn:hover {
+  background: var(--bg-hover, #333);
+  color: var(--text-primary, #fff);
+}
+
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  margin: 0;
+}
+
+.app-header__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-header__canvas-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #ccc;
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.app-header__canvas-btn:hover {
+  background: #333;
+  color: #fff;
+}
+
+.app-content {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+.app-footer {
+  background: #1a1a1a;
+}
+
+/* Split Pane Layout */
+.app-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-resize-handle {
+  width: 1px;
+  background: #333;
+  cursor: col-resize;
+  transition: background 0.15s;
+}
+
+.app-resize-handle:hover {
+  background: #4a9eff;
+}
+
+.app-resize-handle[data-resize-handle-active] {
+  background: #4a9eff;
+}

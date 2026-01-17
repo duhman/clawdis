@@ -101,12 +101,12 @@ final class PresenceReporter {
 
         var fallback: String?
         var en0: String?
+        var tailscale: String?
 
         for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let flags = Int32(ptr.pointee.ifa_flags)
             let isUp = (flags & IFF_UP) != 0
             let isLoopback = (flags & IFF_LOOPBACK) != 0
-            let name = String(cString: ptr.pointee.ifa_name)
             let family = ptr.pointee.ifa_addr.pointee.sa_family
             if !isUp || isLoopback || family != UInt8(AF_INET) { continue }
 
@@ -125,11 +125,26 @@ final class PresenceReporter {
             let bytes = len.map { UInt8(bitPattern: $0) }
             guard let ip = String(bytes: bytes, encoding: .utf8) else { continue }
 
-            if name == "en0" { en0 = ip; break }
+            // Tailscale uses 100.64.0.0/10 CGNAT range (100.64-127.x.x.x)
+            if tailscale == nil, Self.isTailscaleIP(ip) {
+                tailscale = ip
+            }
+
+            let name = String(cString: ptr.pointee.ifa_name)
+            if en0 == nil, name == "en0" { en0 = ip }
             if fallback == nil { fallback = ip }
         }
 
-        return en0 ?? fallback
+        // Prefer Tailscale > en0 > any other interface
+        return tailscale ?? en0 ?? fallback
+    }
+
+    /// Returns true if the IP is in Tailscale's CGNAT range (100.64.0.0/10).
+    private static func isTailscaleIP(_ ip: String) -> Bool {
+        let parts = ip.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4, parts[0] == 100 else { return false }
+        // 100.64.0.0/10 means first octet is 100, second octet is 64-127
+        return parts[1] >= 64 && parts[1] <= 127
     }
 }
 
@@ -153,6 +168,10 @@ extension PresenceReporter {
 
     static func _testPrimaryIPv4Address() -> String? {
         self.primaryIPv4Address()
+    }
+
+    static func _testIsTailscaleIP(_ ip: String) -> Bool {
+        self.isTailscaleIP(ip)
     }
 }
 #endif

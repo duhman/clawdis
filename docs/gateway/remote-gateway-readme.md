@@ -5,7 +5,9 @@ read_when: "Connecting the macOS app to a remote gateway over SSH"
 
 # Running Clawdbot.app with a Remote Gateway
 
-Clawdbot.app uses SSH tunneling to connect to a remote gateway. This guide shows you how to set it up.
+Clawdbot.app manages its own SSH tunnel when Remote over SSH is enabled. This guide shows both:
+- **App-managed tunnels** (recommended)
+- **Manual tunnels** (CLI-only or legacy setups)
 
 ## Overview
 
@@ -29,32 +31,60 @@ Clawdbot.app uses SSH tunneling to connect to a remote gateway. This guide shows
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Quick Setup
+## App-Managed Tunnel (Recommended)
+
+### Step 1: Add SSH Config (optional but recommended)
+
+Edit `~/.ssh/config` and add:
+
+```ssh
+Host gateway-host
+    HostName <tailnet-ip-or-magicdns>
+    User <remote-user>
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+```
+
+### Step 2: Configure the macOS app
+
+In *Settings → General*:
+- **Remote over SSH**: enabled
+- **SSH target**: `user@gateway-host`
+- **Identity file** (optional): `~/.ssh/id_ed25519`
+- **Project root** (optional): remote checkout path
+
+Click **Test remote**. The app will open the tunnel automatically.
+
+Note: Do **not** run a separate SSH tunnel LaunchAgent when using the app; it can occupy local port `18789` and cause “local port unavailable” errors.
+
+---
+
+## Manual Tunnel (CLI or legacy)
 
 ### Step 1: Add SSH Config
 
 Edit `~/.ssh/config` and add:
 
 ```ssh
-Host remote-gateway
-    HostName <REMOTE_IP>          # e.g., 172.27.187.184
-    User <REMOTE_USER>            # e.g., jefferson
+Host gateway-host
+    HostName <remote-host>
+    User <remote-user>
     AddressFamily inet
     LocalForward 127.0.0.1:18789 127.0.0.1:18789
-    IdentityFile ~/.ssh/id_rsa
+    IdentityFile ~/.ssh/id_ed25519
     IdentitiesOnly yes
     ServerAliveInterval 30
     ServerAliveCountMax 3
 ```
 
-Replace `<REMOTE_IP>` and `<REMOTE_USER>` with your values.
+Replace `<remote-host>` and `<remote-user>` with your values.
 
 ### Step 2: Copy SSH Key
 
 Copy your public key to the remote machine (enter password once):
 
 ```bash
-ssh-copy-id -i ~/.ssh/id_rsa <REMOTE_USER>@<REMOTE_IP>
+ssh-copy-id -i ~/.ssh/id_ed25519 <remote-user>@<remote-host>
 ```
 
 ### Step 3: Set Gateway Token
@@ -66,7 +96,7 @@ launchctl setenv CLAWDBOT_GATEWAY_TOKEN "<your-token>"
 ### Step 4: Start SSH Tunnel
 
 ```bash
-ssh -N remote-gateway &
+ssh -N gateway-host &
 ```
 
 ### Step 5: Restart Clawdbot.app
@@ -80,9 +110,10 @@ The app will now connect to the remote gateway through the SSH tunnel.
 
 ---
 
-## Auto-Start Tunnel on Login
+## Auto-Start Tunnel on Login (Manual Tunnel Only)
 
-To have the SSH tunnel start automatically when you log in, create a Launch Agent.
+To have a manual SSH tunnel start automatically when you log in, create a Launch Agent.
+Skip this if the macOS app is managing your tunnel.
 
 ### Create the PLIST file
 
@@ -105,7 +136,7 @@ Save this as `~/Library/LaunchAgents/com.clawdbot.ssh-tunnel.plist`:
         <string>ServerAliveInterval=30</string>
         <string>-o</string>
         <string>ServerAliveCountMax=3</string>
-        <string>remote-gateway</string>
+        <string>gateway-host</string>
     </array>
     <key>KeepAlive</key>
     <true/>
@@ -140,7 +171,7 @@ and confirm nothing else is listening on `127.0.0.1:18789`.
 **Check if tunnel is running:**
 
 ```bash
-ps aux | grep "ssh -N remote-gateway" | grep -v grep
+ps aux | grep "ssh -N gateway-host" | grep -v grep
 lsof -i :18789
 ```
 

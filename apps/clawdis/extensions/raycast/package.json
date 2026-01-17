@@ -1,0 +1,66 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "clawdis",
+  "title": "Clawdis",
+  "description": "Interact with Clawdbot Gateway from Raycast",
+  "icon": "extension-icon.png",
+  "author": "clawdbot",
+  "categories": [
+    "Productivity",
+    "Developer Tools"
+  ],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "send-message",
+      "title": "Send Message",
+      "description": "Send a message to Clawdbot",
+      "mode": "view"
+    },
+    {
+      "name": "search-history",
+      "title": "Search History",
+      "description": "Search your conversation history",
+      "mode": "view"
+    },
+    {
+      "name": "sessions",
+      "title": "Sessions",
+      "description": "View and switch chat sessions",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "gatewayUrl",
+      "title": "Gateway URL",
+      "description": "WebSocket URL for Clawdbot Gateway",
+      "type": "textfield",
+      "default": "ws://127.0.0.1:18789",
+      "required": true
+    },
+    {
+      "name": "sessionKey",
+      "title": "Default Session",
+      "description": "Default session key to use",
+      "type": "textfield",
+      "default": "raycast",
+      "required": false
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.72.0"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.6",
+    "@types/node": "20.11.0",
+    "@types/react": "^18.2.47",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "lint": "eslint . --ext .ts,.tsx"
+  }
+}

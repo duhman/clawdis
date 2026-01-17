@@ -1,0 +1,129 @@
+.tool-invocation {
+  margin: 8px 0;
+  padding: 12px;
+  background: #1a1a1a;
+  border-radius: 8px;
+  border: 1px solid #333;
+  font-size: 13px;
+}
+
+.tool-invocation--pending {
+  border-color: #ffa500;
+  background: #1a1a0a;
+}
+
+.tool-invocation--result {
+  border-color: #333;
+}
+
+.tool-invocation-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.tool-invocation-icon {
+  font-size: 14px;
+}
+
+.tool-invocation-name {
+  font-weight: 600;
+  color: #fff;
+  font-family: ui-monospace, monospace;
+}
+
+.tool-invocation-state {
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  margin-left: auto;
+}
+
+.tool-invocation-section {
+  margin-top: 8px;
+}
+
+.tool-invocation-label {
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.tool-invocation-code {
+  margin: 0;
+  padding: 8px;
+  background: #0f0f0f;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  color: #a8a8a8;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.tool-invocation-code--error {
+  color: #ff6b6b;
+  background: #1a0a0a;
+}
+
+/* Approval buttons */
+.tool-invocation-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #333;
+}
+
+.tool-invocation-btn {
+  flex: 1;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.tool-invocation-btn--approve {
+  background: #2a7d3a;
+  color: #fff;
+}
+
+.tool-invocation-btn--approve:hover {
+  background: #3a9d4a;
+}
+
+.tool-invocation-btn--reject {
+  background: #333;
+  color: #fff;
+}
+
+.tool-invocation-btn--reject:hover {
+  background: #444;
+}
+
+/* Approval status */
+.tool-invocation-approval {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tool-invocation-approval.approved {
+  background: #1a3a1a;
+  color: #4ade80;
+}
+
+.tool-invocation-approval.rejected {
+  background: #3a1a1a;
+  color: #f87171;
+}

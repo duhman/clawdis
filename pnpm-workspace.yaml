@@ -2,6 +2,7 @@ packages:
   - .
   - ui
   - extensions/*
+  - apps/clawdis
 
 onlyBuiltDependencies:
   - '@whiskeysockets/baileys'

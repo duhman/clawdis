@@ -15,7 +15,18 @@ This flow lets the macOS app act as a full remote control for a Clawdbot gateway
 ## Prereqs on the remote host
 1) Install Node + pnpm and build/install the Clawdbot CLI (`pnpm install && pnpm build && pnpm link --global`).
 2) Ensure `clawdbot` is on PATH for non-interactive shells (symlink into `/usr/local/bin` or `/opt/homebrew/bin` if needed).
-3) Open SSH with key auth. We recommend **Tailscale** IPs for stable reachability off-LAN.
+3) Open SSH with key auth. We recommend **Tailscale** MagicDNS or tailnet IPs for stable reachability off-LAN.
+
+### SSH config (recommended)
+Use an SSH config alias so the app only needs `user@gateway-host`:
+
+```ssh
+Host gateway-host
+    HostName <tailnet-ip-or-magicdns>
+    User <remote-user>
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+```
 
 ## macOS app setup
 1) Open *Settings → General*.
@@ -45,6 +56,7 @@ This flow lets the macOS app act as a full remote control for a Clawdbot gateway
 - **Health probe failed**: check SSH reachability, PATH, and that Baileys is logged in (`clawdbot status --json`).
 - **Web Chat stuck**: confirm the gateway is running on the remote host and the forwarded port matches the gateway WS port; the UI requires a healthy WS connection.
 - **Voice Wake**: trigger phrases are forwarded automatically in remote mode; no separate forwarder is needed.
+- **Remote control tunnel failed (local port 18789 unavailable)**: stop any legacy SSH tunnel LaunchAgent or ad-hoc `ssh -N -L 18789:127.0.0.1:18789 ...` process. The macOS app manages the tunnel when Remote over SSH is enabled.
 
 ## Notification sounds
 Pick sounds per notification from scripts with `clawdbot` and `node.invoke`, e.g.:
